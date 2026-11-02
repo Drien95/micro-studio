@@ -44,14 +44,17 @@ jobs:
             if ($errors) { $errors; exit 1 }
           }
 
-  # Job séparé : l'environnement de msvc-dev-cmd masquerait les outils du WDK
-  # NuGet (stampinf.exe introuvable).
+  # Job séparé, sans msvc-dev-cmd : seul l'environnement du WDK NuGet compte.
   build:
     name: Compilation du pilote (WDK, x64)
     runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@v4
+      # MSBuild 64 bits : le paquet NuGet WDK x64 ne fournit les outils
+      # (stampinf, inf2cat, signtool) que pour un hôte x64.
       - uses: microsoft/setup-msbuild@v2
+        with:
+          msbuild-architecture: x64
       - name: Kit de développement de pilotes (WDK via NuGet)
         run: nuget restore driver\packages.config -PackagesDirectory driver\packages
       - name: Compilation (Release x64, signature de test)
