@@ -9,6 +9,11 @@ projet respecte le [versionnage sémantique](https://semver.org/lang/fr/)
 ## [Non publié]
 
 ### Modifié
+- Calibrage : le gain de sortie peut monter jusqu'à +12 dB (au lieu de +6)
+  pour atteindre -18 LUFS avec un micro USB faible (constaté : -21,9 LUFS sur
+  le Logitech) ; les mots coupés pèsent plus lourd (300 points au lieu de
+  200) et la clarté de la voix DNSMOS (SIG) entre dans le départage final
+  (5 points par point de note).
 - Micro : les micros virtuels (Voicemod, VoiceMeeter, NVIDIA Broadcast,
   Steam, Krisp) ne sont plus pris par défaut, le vrai micro est choisi à
   leur place. Un micro virtuel choisi à la main est gardé, mais signalé, avec

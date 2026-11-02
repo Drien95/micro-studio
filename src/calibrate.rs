@@ -456,8 +456,12 @@ pub fn score(output: &[f32], speech_mask: &[bool], layout: &Layout) -> Score {
         / 3.0;
 
     let nr = (speech_level - noise_level).min(MAX_REDUCTION_DB);
-    let total =
-        nr * 1.0 + keyboard * 0.7 - spread * 1.5 - loud_err * 1.0 - cut * 200.0 - clipped * 5000.0 - tonal * 0.5;
+    let total = nr * 1.0 + keyboard * 0.7
+        - spread * 1.5
+        - loud_err * 1.0
+        - cut * WORDS_CUT_WEIGHT
+        - clipped * 5000.0
+        - tonal * 0.5;
     Score {
         total,
         noise_reduction_db: nr,
@@ -471,6 +475,10 @@ pub fn score(output: &[f32], speech_mask: &[bool], layout: &Layout) -> Score {
         mos: None,
     }
 }
+
+/// Pénalité par mot coupé (en proportion) : 1 % de mots coupés coûte 3
+/// points, autant que 3 dB de bruit de fond en plus.
+const WORDS_CUT_WEIGHT: f32 = 300.0;
 
 /// Résultat complet d'un calibrage.
 #[derive(Clone, Debug)]
@@ -579,7 +587,7 @@ pub fn run(rec: &Recording, mut progress: impl FnMut(f32)) -> CalibrationResult 
         for (p, s) in &mut results {
             let m = step(&render_aligned(p, &full));
             s.mos = Some(m);
-            s.total += MOS_WEIGHT * m.ovrl;
+            s.total += MOS_WEIGHT * m.ovrl + MOS_SIG_WEIGHT * m.sig;
         }
     }
     progress(1.0);
@@ -699,9 +707,17 @@ pub fn refinements(p: &Params, step: f32) -> Vec<Params> {
 const MOS_FINALISTS: usize = 3;
 /// Extraits de 9 s notés par DNSMOS dans la lecture (début et fin).
 const MOS_CLIPS: usize = 2;
+/// Correction de volume de sortie maximale (dB) appliquée par le calibrage.
+/// 12 dB : assez pour un micro USB faible (voix vers -40 dBFS), relevé par
+/// le gain d'entrée puis par celui-ci.
+const MAX_OUTPUT_GAIN_DB: f32 = 12.0;
+
 /// Poids d'un point de note globale DNSMOS dans le score (en « dB » de score) :
 /// un point sur l'échelle 1-5 sépare un rendu « médiocre » d'un rendu « bon ».
 const MOS_WEIGHT: f32 = 10.0;
+/// Poids supplémentaire de la clarté de la voix (SIG) : un débruitage qui
+/// abîme la voix doit perdre face à un réglage plus doux.
+const MOS_SIG_WEIGHT: f32 = 5.0;
 
 /// Variantes de la manche 1 qui repassent avec DeepFilterNet.
 const FINALISTS: usize = 6;
@@ -759,7 +775,7 @@ fn evaluate_all(
 fn evaluate(mut p: Params, full: &[f32], mask: &[bool], layout: &Layout) -> (Params, Score) {
     let out = render_aligned(&p, full);
     let lufs = integrated_lufs(out.get(layout.speech_samples.clone()).unwrap_or(&out));
-    p.output_gain_db = (TARGET_LUFS - lufs).clamp(-6.0, 6.0);
+    p.output_gain_db = (TARGET_LUFS - lufs).clamp(-MAX_OUTPUT_GAIN_DB, MAX_OUTPUT_GAIN_DB);
     let s = score(&render_aligned(&p, full), mask, layout);
     (p, s)
 }
