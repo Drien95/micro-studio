@@ -24,6 +24,10 @@ La CI refuse toute pull request où l'une de ces commandes échoue.
 - **Pas de `unsafe`** (interdit par le lint `unsafe_code`).
 - Toute exception à un lint se fait avec `#[expect(lint, reason = "...")]`.
 - Chaque correction de bug arrive avec un test qui l'aurait détecté.
+- Tests : voir [docs/TESTS.md](docs/TESTS.md) (niveaux, techniques, où ajouter
+  un test). Un changement voulu du son se valide avec
+  `UPDATE_GOLDEN=1 cargo test --test regression` et le diff des références
+  est expliqué dans la pull request.
 
 ## Messages de commit
 

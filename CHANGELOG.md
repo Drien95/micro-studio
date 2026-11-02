@@ -9,9 +9,13 @@ projet respecte le [versionnage sémantique](https://semver.org/lang/fr/)
 ## [Non publié]
 
 ### Ajouté
-- Tests d'intégration (`tests/`) : absence d'allocation dans le traitement
-  temps réel, robustesse face aux entrées et réglages extrêmes, compatibilité
-  des fichiers de réglages, calibrage déterministe et sans plantage.
+- Plan de test (`docs/TESTS.md`, ISO/IEC/IEEE 29119 et niveaux ISTQB) et 95
+  tests automatiques : unitaires dans chaque module, intégration, système
+  (interface pilotée avec `egui_kittest`), régression sonore (empreintes de
+  référence par préréglage), propriétés (`proptest`), absence d'allocation
+  dans le traitement temps réel.
+- Trait `AudioBackend` et `InputProcessor` / `OutputProcessor` : le moteur
+  audio et l'interface sont testables sans carte son.
 - CI qualité : format, clippy en mode strict, tests sous Windows, Linux et
   macOS, documentation, version minimale de Rust, sécurité et licences des
   dépendances (cargo-deny), mesure de couverture.
@@ -25,6 +29,14 @@ projet respecte le [versionnage sémantique](https://semver.org/lang/fr/)
 - Code formaté avec rustfmt, zéro avertissement clippy (pedantic).
 
 ### Corrigé
+- Le de-esser n'atténuait les sifflantes que d'environ 0,7 dB au lieu de la
+  réduction demandée (6 dB par défaut), à cause du déphasage du filtre de
+  séparation.
+- Une sauvegarde des réglages qui échoue est maintenant signalée dans
+  l'interface ; l'écriture est atomique (fichier temporaire puis renommage).
+- Symboles impossibles à afficher avec les polices par défaut (carrés vides)
+  retirés de l'interface ; curseurs de l'égaliseur nommés pour les lecteurs
+  d'écran.
 - Un échantillon invalide (NaN ou infini) envoyé par le pilote audio faisait
   planter le débruitage ; il est désormais remplacé par du silence.
 - Un facteur Q nul ou invalide dans un fichier de réglages rendait les filtres

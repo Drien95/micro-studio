@@ -18,10 +18,11 @@ La norme internationale de référence pour juger la qualité d'un logiciel
 | Caractéristique | Ce qui est fait | Vérification |
 |---|---|---|
 | **Fiabilité** : tolérance aux fautes | Échantillons NaN/infinis du pilote remplacés par du silence ; réglages corrompus bornés (Q, fréquences) ; Mutex empoisonné récupéré ; aucun `unwrap()` hors tests | `tests/robustness.rs`, lint `clippy::unwrap_used` |
-| **Fiabilité** : maturité | 23 tests automatiques, déterministes | CI sur chaque pull request |
+| **Fiabilité** : maturité | 95 tests automatiques (unitaires, intégration, système, régression, propriétés), plan de test dans [TESTS.md](TESTS.md) | CI sur chaque pull request, seuil de couverture |
 | **Fiabilité** : disponibilité temps réel | Aucune allocation ni verrou bloquant dans le thread audio ; tampon de 20 ms avec rattrapage de dérive d'horloge | `tests/realtime.rs` (allocateur instrumenté) |
 | **Maintenabilité** : modularité | Bibliothèque (`dsp`, `params`, `calibrate`, `settings`) séparée du moteur, de l'interface et du binaire | Structure `src/lib.rs` |
-| **Maintenabilité** : testabilité | Toute la chaîne de traitement et le calibrage sont testables sans carte son | `cargo test` |
+| **Maintenabilité** : testabilité | Tout est testable sans carte son ni écran : logique des callbacks audio séparée de cpal, matériel derrière le trait `AudioBackend`, interface testée avec `egui_kittest` | `cargo test`, couverture mesurée en CI |
+| **Utilisabilité** : accessibilité | Chaque contrôle a un nom lisible par un lecteur d'écran ; aucun caractère non affichable | `tests/ui.rs` (vérification d'accessibilité d'egui_kittest) |
 | **Maintenabilité** : analysabilité | Format unique (rustfmt), clippy strict sans avertissement, documentation générée | CI `fmt`, `clippy`, `doc` |
 | **Maintenabilité** : modifiabilité | Réglages compatibles avec les versions passées et futures (`serde(default)`, champs inconnus ignorés) | `tests/settings.rs` |
 | **Portabilité** : adaptabilité | Code multiplateforme (cpal) ; compilé et testé sous Windows, Linux et macOS | CI `test` (3 OS) |
@@ -79,15 +80,12 @@ une panne met des vies en jeu ; leur équivalent Rust est le guide
 
 Classé par utilité réelle :
 
-1. **Test du moteur audio sur matériel** : `engine.rs` dépend d'une carte son et
-   n'est testé qu'à la main. Écrire un protocole de test manuel (micro USB,
-   VB-Cable, 44,1 et 48 kHz, débranchement à chaud).
-2. **Erreurs de sauvegarde** : `Settings::save` ignore silencieusement un échec
-   d'écriture ; l'afficher dans l'interface (écriture atomique via fichier
-   temporaire).
-3. **Découper l'assistant de calibrage** (`ui.rs`) en fonctions plus courtes.
-4. **Seuil de couverture** : la CI mesure la couverture ; fixer un minimum une
-   fois la valeur de référence connue.
-5. **Fuzzing** de la chaîne DSP et du chargement des réglages (`cargo-fuzz`).
-6. **Exécutable signé** (certificat de signature de code) pour éviter
+1. **Test d'acceptation sur matériel** : l'ouverture réelle des flux cpal reste
+   testée à la main, selon le protocole de [TESTS.md](TESTS.md) §5.
+2. **Découper l'assistant de calibrage** (`ui.rs`) en fonctions plus courtes.
+3. **Fuzzing** guidé par la couverture (`cargo-fuzz`, nécessite Rust nightly)
+   en complément des tests par propriétés.
+4. **Tests de performance** : mesurer le temps de traitement d'une trame
+   (budget : 10 ms) et l'intégrer à la CI (`criterion`).
+5. **Exécutable signé** (certificat de signature de code) pour éviter
    l'avertissement SmartScreen de Windows.
