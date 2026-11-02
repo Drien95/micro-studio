@@ -105,15 +105,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: llvm-tools-preview
+      # Pour la version figée dans rust-toolchain.toml, celle qu'utilise cargo ici.
+      - run: rustup component add llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-llvm-cov
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      # Bloquant sous 85 % de lignes couvertes (88,6 % au 2 novembre 2026).
       - name: Mesure (main.rs exclu, il ne fait qu'ouvrir la fenêtre)
+        shell: bash
         run: |
+          set -o pipefail
           cargo llvm-cov --locked --all-targets --summary-only \
-            --ignore-filename-regex 'src/main\.rs' | tee coverage.txt
+            --ignore-filename-regex 'src/main\.rs' --fail-under-lines 85 | tee coverage.txt
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           cat coverage.txt >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"

@@ -18,7 +18,7 @@ La norme internationale de référence pour juger la qualité d'un logiciel
 | Caractéristique | Ce qui est fait | Vérification |
 |---|---|---|
 | **Fiabilité** : tolérance aux fautes | Échantillons NaN/infinis du pilote remplacés par du silence ; réglages corrompus bornés (Q, fréquences) ; Mutex empoisonné récupéré ; aucun `unwrap()` hors tests | `tests/robustness.rs`, lint `clippy::unwrap_used` |
-| **Fiabilité** : maturité | 95 tests automatiques (unitaires, intégration, système, régression, propriétés), plan de test dans [TESTS.md](TESTS.md) | CI sur chaque pull request, seuil de couverture |
+| **Fiabilité** : maturité | 98 tests automatiques (88,6 % des lignes couvertes) (unitaires, intégration, système, régression, propriétés), plan de test dans [TESTS.md](TESTS.md) | CI sur chaque pull request, seuil de couverture |
 | **Fiabilité** : disponibilité temps réel | Aucune allocation ni verrou bloquant dans le thread audio ; tampon de 20 ms avec rattrapage de dérive d'horloge | `tests/realtime.rs` (allocateur instrumenté) |
 | **Maintenabilité** : modularité | Bibliothèque (`dsp`, `params`, `calibrate`, `settings`) séparée du moteur, de l'interface et du binaire | Structure `src/lib.rs` |
 | **Maintenabilité** : testabilité | Tout est testable sans carte son ni écran : logique des callbacks audio séparée de cpal, matériel derrière le trait `AudioBackend`, interface testée avec `egui_kittest` | `cargo test`, couverture mesurée en CI |

@@ -8,25 +8,31 @@ use micro_studio::engine::{AudioBackend, DeviceLists, Engine, Shared};
 use micro_studio::settings::Settings;
 use micro_studio::ui::App;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 type Calls = Arc<Mutex<Vec<(Option<String>, Option<String>)>>>;
 
-/// Faux périphérique : enregistre chaque démarrage, peut simuler une panne.
+/// Faux périphérique : enregistre chaque démarrage, peut simuler une panne, et
+/// sa liste de périphériques peut changer en cours de test (câble installé).
+/// Comme le vrai, il refuse de démarrer sans sortie si VB-Cable est absent.
 struct FakeBackend {
-    devices: DeviceLists,
+    devices: Arc<Mutex<DeviceLists>>,
     fail: bool,
     calls: Calls,
 }
 
 impl AudioBackend for FakeBackend {
     fn list_devices(&self) -> DeviceLists {
-        self.devices.clone()
+        self.devices.lock().expect("verrou de test").clone()
     }
 
     fn start(&self, _: &Arc<Shared>, input: Option<&str>, output: Option<&str>) -> anyhow::Result<Engine> {
         self.calls.lock().expect("verrou de test").push((input.map(Into::into), output.map(Into::into)));
         if self.fail {
             anyhow::bail!("Aucun micro détecté");
+        }
+        if output.is_none() {
+            anyhow::bail!("VB-Cable n'est pas installé : choisis une sortie ou installe VB-Cable");
         }
         Ok(Engine::detached(input.unwrap_or("Micro USB"), output.unwrap_or("Sortie"), 48_000, 48_000))
     }
@@ -41,14 +47,24 @@ fn devices(with_cable: bool) -> DeviceLists {
 }
 
 fn app(settings: Settings, with_cable: bool, fail: bool) -> (Harness<'static, App>, Calls) {
+    let (h, calls, _) = app_with_devices(settings, with_cable, fail);
+    (h, calls)
+}
+
+fn app_with_devices(
+    settings: Settings,
+    with_cable: bool,
+    fail: bool,
+) -> (Harness<'static, App>, Calls, Arc<Mutex<DeviceLists>>) {
     let calls = Calls::default();
-    let backend = FakeBackend { devices: devices(with_cable), fail, calls: Arc::clone(&calls) };
+    let shared_devices = Arc::new(Mutex::new(devices(with_cable)));
+    let backend = FakeBackend { devices: Arc::clone(&shared_devices), fail, calls: Arc::clone(&calls) };
     // `None` : l'application n'écrit jamais sur le disque pendant les tests.
     let app = App::with_backend(settings, Box::new(backend), None);
     let mut harness =
         Harness::builder().with_size([900.0, 760.0]).build_ui_state(|ui, app: &mut App| app.show(ui), app);
     harness.run_steps(2);
-    (harness, calls)
+    (harness, calls, shared_devices)
 }
 
 fn calibrated() -> Settings {
@@ -64,7 +80,7 @@ fn starts_automatically_on_the_virtual_cable() {
     assert_eq!(calls[0].1.as_deref(), Some("CABLE Input (VB-Audio Virtual Cable)"));
     drop(calls);
     h.get_by_label_contains("Actif");
-    assert!(h.query_by_label_contains("VB-Cable n'est pas installé").is_none());
+    assert!(h.query_by_label_contains("c'est lui qui crée le micro virtuel").is_none());
     assert_eq!(h.state().settings().output_device.as_deref(), Some("CABLE Input (VB-Audio Virtual Cable)"));
 }
 
@@ -108,7 +124,7 @@ fn audio_failure_is_shown_and_does_not_open_the_assistant() {
 #[test]
 fn missing_vb_cable_shows_a_download_link() {
     let (h, _) = app(calibrated(), false, false);
-    h.get_by_label_contains("VB-Cable n'est pas installé");
+    h.get_by_label_contains("c'est lui qui crée le micro virtuel");
     h.get_by_label_contains("Télécharger VB-Cable");
 }
 
@@ -141,4 +157,43 @@ fn saving_a_user_preset() {
     let presets = &h.state().settings().user_presets;
     assert_eq!(presets.len(), 1);
     assert_eq!(presets[0].0, "Mes réglages 1");
+}
+
+#[test]
+fn installing_vb_cable_is_detected_without_restarting() {
+    let (mut h, calls, shared_devices) = app_with_devices(Settings::default(), false, false);
+    assert!(!h.state().is_running(), "sans VB-Cable, le son ne peut pas démarrer");
+    h.get_by_label_contains("c'est lui qui crée le micro virtuel");
+    h.state_mut().set_device_rescan(Duration::ZERO);
+
+    // L'utilisateur installe VB-Cable pendant que le logiciel tourne.
+    *shared_devices.lock().expect("verrou") = devices(true);
+    h.run_steps(2);
+    assert!(h.state().is_running(), "démarrage automatique dès que le câble apparaît");
+    assert!(h.query_by_label_contains("c'est lui qui crée le micro virtuel").is_none());
+    assert_eq!(
+        calls.lock().expect("verrou").last().and_then(|c| c.1.clone()).as_deref(),
+        Some("CABLE Input (VB-Audio Virtual Cable)")
+    );
+    assert!(h.state().calibration_open(), "premier lancement : l'assistant s'ouvre ensuite");
+}
+
+#[test]
+fn a_manual_stop_is_not_undone_by_the_rescan() {
+    let (mut h, calls) = app(calibrated(), true, false);
+    h.state_mut().set_device_rescan(Duration::ZERO);
+    h.get_by_label("Arrêter").click();
+    h.run_steps(3);
+    assert!(!h.state().is_running(), "l'arrêt volontaire est respecté");
+    assert_eq!(calls.lock().expect("verrou").len(), 1);
+}
+
+#[test]
+fn device_lists_are_labelled_before_the_list() {
+    let (h, _) = app(calibrated(), true, false);
+    // Les listes portent le nom de leur libellé (accessibilité) ; le libellé
+    // « Micro : » est placé avant la liste, pas après.
+    let micro = h.get_by_label("Micro :").rect();
+    let sortie = h.get_by_label("Sortie (micro virtuel) :").rect();
+    assert!(micro.left() < sortie.left());
 }

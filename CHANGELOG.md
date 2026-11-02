@@ -9,11 +9,15 @@ projet respecte le [versionnage sémantique](https://semver.org/lang/fr/)
 ## [Non publié]
 
 ### Ajouté
-- Plan de test (`docs/TESTS.md`, ISO/IEC/IEEE 29119 et niveaux ISTQB) et 95
+- Plan de test (`docs/TESTS.md`, ISO/IEC/IEEE 29119 et niveaux ISTQB) et 98
   tests automatiques : unitaires dans chaque module, intégration, système
   (interface pilotée avec `egui_kittest`), régression sonore (empreintes de
   référence par préréglage), propriétés (`proptest`), absence d'allocation
   dans le traitement temps réel.
+- Tant que le son est arrêté, la liste des périphériques est relue toutes les
+  2,5 s : VB-Cable installé pendant que le logiciel tourne est détecté et le
+  son démarre tout seul.
+- Seuil de couverture bloquant en CI : 85 % des lignes (88,6 % mesurés).
 - Trait `AudioBackend` et `InputProcessor` / `OutputProcessor` : le moteur
   audio et l'interface sont testables sans carte son.
 - CI qualité : format, clippy en mode strict, tests sous Windows, Linux et
@@ -28,7 +32,14 @@ projet respecte le [versionnage sémantique](https://semver.org/lang/fr/)
   être testé sans carte son.
 - Code formaté avec rustfmt, zéro avertissement clippy (pedantic).
 
+### Sécurité
+- ringbuf 0.4 → 0.6 : faille RUSTSEC-2026-0293 (double libération dans
+  `Consumer::skip`), signalée par cargo-deny. Non exploitable ici (échantillons
+  `f32` sans destructeur), corrigée par principe.
+
 ### Corrigé
+- Les libellés « Micro » et « Sortie » s'affichaient après leur liste, ce qui
+  laissait croire que « VB-Cable » était le micro ; ils sont maintenant avant.
 - Le de-esser n'atténuait les sifflantes que d'environ 0,7 dB au lieu de la
   réduction demandée (6 dB par défaut), à cause du déphasage du filtre de
   séparation.
