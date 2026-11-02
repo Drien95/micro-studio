@@ -1,14 +1,30 @@
 # Contribuer à Micro Studio
 
-## Avant chaque commit
+## Avant chaque commit : la CI locale
 
-```sh
-cargo fmt
-cargo clippy --all-targets -- -D warnings
-cargo test
+Les mêmes vérifications que GitHub, sur ton PC, en moins d'une minute une
+fois le projet compilé :
+
+```powershell
+.\scripts\ci.ps1          # Windows : format, clippy, tests
+.\scripts\ci.ps1 -Full    # + documentation, dépendances, couverture
 ```
 
-La CI refuse toute pull request où l'une de ces commandes échoue.
+```sh
+scripts/ci.sh [--full]     # Linux, macOS, Git Bash
+```
+
+Pour que ça se lance tout seul avant chaque `git push` (une fois par clone) :
+
+```sh
+git config core.hooksPath .githooks
+```
+
+Le mode complet utilise `cargo-deny` et `cargo-llvm-cov` s'ils sont installés
+(`cargo install --locked cargo-deny cargo-llvm-cov`), sinon ces étapes sont
+sautées. La CI GitHub reste la vérification finale : elle seule teste
+Windows, Linux et macOS et la version minimale de Rust, et refuse toute pull
+request qui échoue.
 
 ## Règles de code
 

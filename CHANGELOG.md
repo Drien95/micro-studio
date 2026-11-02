@@ -17,6 +17,9 @@ projet respecte le [versionnage sémantique](https://semver.org/lang/fr/)
 - Tant que le son est arrêté, la liste des périphériques est relue toutes les
   2,5 s : VB-Cable installé pendant que le logiciel tourne est détecté et le
   son démarre tout seul.
+- CI locale : `scripts/ci.ps1` (Windows) et `scripts/ci.sh`, mêmes
+  vérifications que GitHub en moins d'une minute, et hook `pre-push`
+  optionnel (`.githooks/`).
 - Seuil de couverture bloquant en CI : 85 % des lignes (88,6 % mesurés).
 - Trait `AudioBackend` et `InputProcessor` / `OutputProcessor` : le moteur
   audio et l'interface sont testables sans carte son.

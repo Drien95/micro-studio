@@ -64,7 +64,8 @@ avertissement et est testé sous Windows, Linux et macOS à chaque modification.
 Les normes appliquées (ISO/IEC 25010, règles NASA « Power of 10 », SemVer…) et
 ce qui reste à faire sont détaillés dans [docs/QUALITE.md](docs/QUALITE.md),
 la stratégie de test (ISO/IEC/IEEE 29119) dans [docs/TESTS.md](docs/TESTS.md).
-Pour contribuer : [CONTRIBUTING.md](CONTRIBUTING.md). Historique des versions :
+Avant d'envoyer une modification : `.\scripts\ci.ps1` lance en local les
+mêmes vérifications que GitHub. Pour contribuer : [CONTRIBUTING.md](CONTRIBUTING.md). Historique des versions :
 [CHANGELOG.md](CHANGELOG.md).
 
 ## Feuille de route
