@@ -47,6 +47,10 @@ Les réglages sont sauvegardés dans `%APPDATA%\micro-studio\settings.json` et r
 
 ## Compiler soi-même
 
+Rust 1.95 au minimum est nécessaire (egui/eframe 0.37). La version utilisée
+par le projet est figée dans `rust-toolchain.toml` et s'installe toute seule
+avec rustup.
+
 ```
 # Rust : https://rustup.rs
 cargo run --release

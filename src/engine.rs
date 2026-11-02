@@ -474,7 +474,7 @@ mod tests {
     #[test]
     fn recording_tap_keeps_raw_input() {
         let sh = shared();
-        assert!(sh.stop_recording().is_empty(), "rien n'est enregistré par défaut");
+        assert_eq!(sh.stop_recording().len(), 0, "rien n'est enregistré par défaut");
         sh.start_recording();
         let (mut prod, _cons) = HeapRb::<f32>::new(FRAME * 8).split();
         let mut input = InputProcessor::new(1, INTERNAL_RATE, &Params::default());
@@ -482,7 +482,7 @@ mod tests {
         let rec = sh.stop_recording();
         assert_eq!(rec.len(), FRAME * 3);
         assert!(rec.iter().all(|&x| (x - 0.25).abs() < 1e-6));
-        assert!(sh.stop_recording().is_empty(), "l'enregistrement est rendu une seule fois");
+        assert_eq!(sh.stop_recording().len(), 0, "l'enregistrement est rendu une seule fois");
     }
 
     #[test]
@@ -497,7 +497,7 @@ mod tests {
         assert!(sh.params.is_poisoned());
         sh.set_params(&Params::default()); // ne doit pas paniquer
         sh.start_recording();
-        assert!(sh.stop_recording().is_empty());
+        assert_eq!(sh.stop_recording().len(), 0);
     }
 
     #[test]

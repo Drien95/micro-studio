@@ -77,7 +77,8 @@ jobs:
           toolchain: ${{ steps.msrv.outputs.version }}
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
-      - run: cargo check --locked --all-targets
+      # `+version` l'emporte sur rust-toolchain.toml (qui fige la version de travail).
+      - run: cargo +${{ steps.msrv.outputs.version }} check --locked --all-targets
 
   doc:
     name: Documentation

@@ -20,7 +20,7 @@ fn old_settings_file_with_missing_fields_still_loads() {
     assert!((s.params.input_gain_db - 6.0).abs() < f32::EPSILON);
     assert!((s.params.comp_ratio - Params::default().comp_ratio).abs() < f32::EPSILON);
     assert!(s.calibrated);
-    assert!(s.user_presets.is_empty());
+    assert_eq!(s.user_presets.len(), 0);
 }
 
 #[test]

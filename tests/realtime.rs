@@ -70,8 +70,8 @@ fn chain_process_does_not_allocate() {
         // Une trame de chauffe : les états internes sont créés à l'initialisation.
         chain.process(&mut frame);
         let n = allocations_during(|| {
-            for chunk in input.chunks_exact(FRAME) {
-                frame.copy_from_slice(chunk);
+            for chunk in input.as_chunks::<FRAME>().0 {
+                frame = *chunk;
                 chain.process(&mut frame);
             }
         });

@@ -60,7 +60,7 @@ fn bypass_only_applies_input_gain() {
 #[test]
 fn render_handles_partial_and_empty_buffers() {
     let p = Params::default();
-    assert!(Chain::render(&p, &[]).0.is_empty());
+    assert_eq!(Chain::render(&p, &[]).0.len(), 0);
     let (out, stats) = Chain::render(&p, &noise(FRAME + 17, 0.2, 5));
     assert_eq!(out.len(), FRAME + 17);
     assert_eq!(stats.len(), 2);

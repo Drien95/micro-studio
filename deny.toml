@@ -8,6 +8,12 @@ targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu", "aarch64-apple-
 # Failles de sécurité connues (base RustSec) : bloquantes.
 version = 2
 yanked = "deny"
+ignore = [
+    # zvariant_derive n'est plus maintenu seul (fusionné dans zbus 6). Il n'est
+    # tiré que sous Linux, par l'accessibilité d'eframe (accesskit_unix), et ne
+    # contient pas de faille connue. À retirer dès qu'eframe passe à zbus 6.
+    { id = "RUSTSEC-2026-0372", reason = "transitif via eframe, Linux uniquement, aucune faille" },
+]
 
 [licenses]
 version = 2
