@@ -1,0 +1,3 @@
+# Les tests peuvent utiliser unwrap/panic : un échec doit y être bruyant.
+allow-unwrap-in-tests = true
+allow-panic-in-tests = true
