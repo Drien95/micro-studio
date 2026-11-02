@@ -313,6 +313,40 @@ fn the_cable_output_is_never_used_as_the_microphone() {
     assert_eq!(h.state().settings().input_device.as_deref(), Some("Micro USB"));
 }
 
+/// Cas réel (PC d'Adrien) : Voicemod est le micro par défaut de Windows.
+fn app_with_voicemod(settings: Settings) -> (Harness<'static, App>, Calls) {
+    let calls = Calls::default();
+    let mut lists = devices(true);
+    lists.inputs.insert(0, "Microphone (Voicemod Virtual Audio Device (WDM))".to_owned());
+    let backend = FakeBackend { devices: Arc::new(Mutex::new(lists)), fail: false, calls: Arc::clone(&calls) };
+    let app = App::with_backend(settings, Box::new(backend), None);
+    let mut harness =
+        Harness::builder().with_size([900.0, 760.0]).build_ui_state(|ui, app: &mut App| app.show(ui), app);
+    harness.run_steps(2);
+    (harness, calls)
+}
+
+#[test]
+fn a_virtual_default_microphone_is_replaced_by_the_real_one() {
+    let (h, _) = app_with_voicemod(calibrated());
+    assert!(h.state().is_running());
+    assert_eq!(h.state().settings().input_device.as_deref(), Some("Micro USB"));
+}
+
+#[test]
+fn a_saved_virtual_microphone_is_kept_but_flagged() {
+    let saved =
+        Settings { input_device: Some("Microphone (Voicemod Virtual Audio Device (WDM))".to_owned()), ..calibrated() };
+    let (mut h, _) = app_with_voicemod(saved);
+    // Choix explicite : respecté, mais signalé avec un bouton de correction.
+    assert_eq!(h.state().settings().input_device.as_deref(), Some("Microphone (Voicemod Virtual Audio Device (WDM))"));
+    h.get_by_label_contains("est un micro virtuel");
+    h.get_by_label("Utiliser « Micro USB »").click();
+    h.run_steps(2);
+    assert_eq!(h.state().settings().input_device.as_deref(), Some("Micro USB"));
+    assert!(h.query_by_label_contains("est un micro virtuel").is_none());
+}
+
 #[test]
 fn without_a_real_microphone_the_loop_is_refused() {
     let calls = Calls::default();

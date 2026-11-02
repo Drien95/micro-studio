@@ -130,7 +130,19 @@ impl App {
     }
 
     fn start_engine(&mut self) {
+        let automatic = self.settings.input_device.is_none();
         self.start_engine_once();
+        // Choix automatique tombé sur un micro virtuel (Voicemod, VoiceMeeter…,
+        // souvent micro par défaut de Windows) : on prend le vrai micro.
+        let virtual_default =
+            automatic && self.engine.as_ref().is_some_and(|e| vbcable::is_virtual_microphone(&e.input_name));
+        if virtual_default
+            && !self.engine.as_ref().is_some_and(|e| vbcable::is_cable_loopback_input(&e.input_name))
+            && let Some(mic) = vbcable::first_real_microphone(&self.devices.inputs)
+        {
+            self.settings.input_device = Some(mic);
+            self.start_engine_once();
+        }
         // Jamais la sortie du câble comme micro (boucle sans fin) : Windows en
         // fait souvent le micro par défaut juste après l'installation de
         // VB-Cable. On bascule alors sur le premier vrai micro.
@@ -240,6 +252,7 @@ impl App {
             self.last_save = Some(Instant::now());
         }
 
+        self.virtual_mic_warning(ui);
         if engine::find_virtual_cable(&self.devices.outputs).is_none() {
             ui.horizontal(|ui| {
                 ui.label(
@@ -252,6 +265,32 @@ impl App {
         if let Some(err) = &self.error {
             ui.label(RichText::new(err).color(Color32::from_rgb(220, 80, 60)));
         }
+    }
+
+    /// Avertit quand le micro choisi est un micro virtuel (Voicemod…) : le son
+    /// reçu est alors déjà traité par un autre logiciel, et le calibrage
+    /// mesurerait ce logiciel au lieu du micro. Propose le vrai micro.
+    fn virtual_mic_warning(&mut self, ui: &mut egui::Ui) {
+        let Some(current) = self.settings.input_device.clone() else { return };
+        if !vbcable::is_virtual_microphone(&current) {
+            return;
+        }
+        let real = vbcable::first_real_microphone(&self.devices.inputs);
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(format!(
+                    "« {current} » est un micro virtuel : le son arrive déjà traité par un autre logiciel."
+                ))
+                .color(Color32::from_rgb(220, 160, 40)),
+            );
+            if let Some(mic) = real
+                && ui.button(format!("Utiliser « {mic} »")).clicked()
+            {
+                self.settings.input_device = Some(mic);
+                self.start_engine();
+                self.last_save = Some(Instant::now());
+            }
+        });
     }
 
     fn meters(&mut self, ui: &mut egui::Ui) {

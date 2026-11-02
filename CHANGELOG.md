@@ -9,6 +9,11 @@ projet respecte le [versionnage sémantique](https://semver.org/lang/fr/)
 ## [Non publié]
 
 ### Modifié
+- Micro : les micros virtuels (Voicemod, VoiceMeeter, NVIDIA Broadcast,
+  Steam, Krisp) ne sont plus pris par défaut, le vrai micro est choisi à
+  leur place. Un micro virtuel choisi à la main est gardé, mais signalé, avec
+  un bouton pour passer au vrai micro (le calibrage mesurerait sinon
+  l'autre logiciel).
 - Moteur DeepFilterNet : convolutions sans test de bornes dans la boucle
   interne et produits scalaires à 16 accumulateurs (environ 6 % plus rapide,
   sortie toujours identique à l'officiel à 1e-7 près). Le produit scalaire

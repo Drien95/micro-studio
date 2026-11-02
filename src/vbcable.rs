@@ -211,10 +211,25 @@ pub fn is_cable_loopback_input(name: &str) -> bool {
     name.contains("cable output") || name.contains("vb-audio virtual cable")
 }
 
-/// Premier vrai micro de la liste (tout sauf la sortie du câble virtuel).
+/// Noms (en minuscules) des micros virtuels courants : changeurs de voix,
+/// tables de mixage logicielles, débruiteurs. Ils renvoient un son déjà
+/// traité par un autre logiciel, pas celui du micro.
+const VIRTUAL_MIC_MARKERS: [&str; 7] =
+    ["voicemod", "voicemeeter", "nvidia broadcast", "steam streaming", "krisp", "virtual", "vb-audio"];
+
+/// Vrai si cette entrée est un micro virtuel (VB-Cable, Voicemod,
+/// `VoiceMeeter`…) plutôt qu'un vrai micro.
+#[must_use]
+pub fn is_virtual_microphone(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    is_cable_loopback_input(name) || VIRTUAL_MIC_MARKERS.iter().any(|m| lower.contains(m))
+}
+
+/// Premier vrai micro de la liste : ni la sortie du câble virtuel, ni un
+/// autre micro virtuel.
 #[must_use]
 pub fn first_real_microphone(inputs: &[String]) -> Option<String> {
-    inputs.iter().find(|n| !is_cable_loopback_input(n)).cloned()
+    inputs.iter().find(|n| !is_virtual_microphone(n)).cloned()
 }
 
 /// Dossier de travail par défaut (`%TEMP%\micro-studio-vbcable`).
@@ -518,6 +533,22 @@ mod tests {
         let inputs = names(&["CABLE Output (VB-Audio Virtual Cable)", "Micro (USB Audio Device)"]);
         assert_eq!(first_real_microphone(&inputs).as_deref(), Some("Micro (USB Audio Device)"));
         assert_eq!(first_real_microphone(&inputs[..1]), None);
+    }
+
+    #[test]
+    fn other_virtual_microphones_are_recognised() {
+        for v in [
+            "Microphone (Voicemod Virtual Audio Device (WDM))",
+            "VoiceMeeter Output (VB-Audio VoiceMeeter VAIO)",
+            "Microphone (NVIDIA Broadcast)",
+            "Microphone (Steam Streaming Microphone)",
+            "Microphone (Krisp Microphone)",
+        ] {
+            assert!(is_virtual_microphone(v), "{v}");
+        }
+        assert!(!is_virtual_microphone("Microphone (Logitech Guitar Hero USB)"));
+        let inputs = names(&["Microphone (Voicemod)", "Micro (Guitar Hero USB)"]);
+        assert_eq!(first_real_microphone(&inputs).as_deref(), Some("Micro (Guitar Hero USB)"));
     }
 
     #[test]
