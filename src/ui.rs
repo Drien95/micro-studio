@@ -4,6 +4,7 @@ use crate::calibrate::{self, CalibrationResult};
 use crate::engine::{self, AudioBackend, CpalBackend, DeviceLists, Engine, INTERNAL_RATE, Shared};
 use crate::params::{EqKind, Params, builtin_presets};
 use crate::settings::Settings;
+use crate::vbcable::{self, Outcome, Step};
 use eframe::egui::{self, Color32, RichText};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -19,6 +20,21 @@ enum Calib {
     Done { result: Box<CalibrationResult>, previous: Params, listening_new: bool },
     Failed(String),
 }
+
+/// Installation de VB-Cable lancée depuis l'en-tête.
+enum VbInstall {
+    Idle,
+    Running { rx: Receiver<VbMsg>, step: Option<Step> },
+    Done(Outcome),
+}
+
+enum VbMsg {
+    Step(Step),
+    Done(Outcome),
+}
+
+/// Fonction qui installe VB-Cable ; remplaçable dans les tests.
+pub type VbInstaller = Arc<dyn Fn(&mut dyn FnMut(Step)) -> Outcome + Send + Sync>;
 
 enum CalibMsg {
     Progress(f32),
@@ -43,6 +59,8 @@ pub struct App {
     last_scan: Instant,
     /// Intervalle de relecture des périphériques tant que le son est arrêté.
     rescan_every: Duration,
+    vb_install: VbInstall,
+    vb_installer: VbInstaller,
 }
 
 /// Intervalle par défaut de relecture des périphériques quand le moteur est
@@ -79,6 +97,10 @@ impl App {
             last_save: None,
             last_scan: Instant::now(),
             rescan_every: DEVICE_RESCAN,
+            vb_install: VbInstall::Idle,
+            vb_installer: Arc::new(|progress: &mut dyn FnMut(Step)| {
+                vbcable::install(&vbcable::PowerShell, &vbcable::default_work_dir(), vbcable::Arch::current(), progress)
+            }),
         };
         // Clé en main : on démarre tout de suite avec les derniers périphériques.
         app.start_engine();
@@ -186,8 +208,8 @@ impl App {
                     RichText::new("VB-Cable n'est pas installé : c'est lui qui crée le micro virtuel.")
                         .color(Color32::from_rgb(220, 160, 40)),
                 );
-                ui.hyperlink_to("Télécharger VB-Cable (gratuit)", "https://vb-audio.com/Cable/");
             });
+            self.vb_install_ui(ui);
         }
         if let Some(err) = &self.error {
             ui.label(RichText::new(err).color(Color32::from_rgb(220, 80, 60)));
@@ -556,6 +578,79 @@ impl App {
         !matches!(self.calib, Calib::Idle)
     }
 
+    /// Remplace l'installation de VB-Cable (les tests évitent ainsi le réseau
+    /// et PowerShell).
+    pub fn set_vb_installer(&mut self, installer: VbInstaller) {
+        self.vb_installer = installer;
+    }
+
+    /// Bouton d'installation de VB-Cable et suivi de son déroulement.
+    fn vb_install_ui(&mut self, ui: &mut egui::Ui) {
+        match &self.vb_install {
+            VbInstall::Running { step, .. } => {
+                ui.label(step.map_or("Préparation de l'installation…", Step::label));
+            }
+            VbInstall::Idle | VbInstall::Done(_) => {
+                if let VbInstall::Done(outcome) = &self.vb_install {
+                    let text = match outcome {
+                        Outcome::Finished => {
+                            format!("{outcome} Le son démarre dès que CABLE Input apparaît ; sinon, redémarre le PC.")
+                        }
+                        _ => outcome.to_string(),
+                    };
+                    ui.label(text);
+                }
+                ui.horizontal(|ui| {
+                    if ui
+                        .button("Installer le micro virtuel (VB-Cable)")
+                        .on_hover_text(
+                            "Télécharge VB-Cable depuis le site officiel de VB-Audio et lance son installation",
+                        )
+                        .clicked()
+                    {
+                        self.start_vb_install();
+                    }
+                    ui.hyperlink_to("Soutenir VB-Audio", vbcable::ORIGIN_URL);
+                });
+            }
+        }
+        ui.label(RichText::new(vbcable::CREDIT).weak().small());
+    }
+
+    fn start_vb_install(&mut self) {
+        let (tx, rx) = channel();
+        let installer = Arc::clone(&self.vb_installer);
+        std::thread::spawn(move || {
+            let outcome = installer(&mut |step| {
+                let _ = tx.send(VbMsg::Step(step));
+            });
+            let _ = tx.send(VbMsg::Done(outcome));
+        });
+        self.vb_install = VbInstall::Running { rx, step: None };
+    }
+
+    /// Relève les messages du fil d'installation de VB-Cable.
+    fn poll_vb_install(&mut self) {
+        let VbInstall::Running { rx, step } = &mut self.vb_install else {
+            return;
+        };
+        let mut finished = None;
+        while let Ok(msg) = rx.try_recv() {
+            match msg {
+                VbMsg::Step(s) => *step = Some(s),
+                VbMsg::Done(outcome) => finished = Some(outcome),
+            }
+        }
+        if let Some(outcome) = finished {
+            if outcome == Outcome::Finished {
+                // Relecture immédiate des périphériques : démarrage automatique
+                // si le câble est déjà là (voir `rescan_devices`).
+                self.last_scan = Instant::now().checked_sub(self.rescan_every).unwrap_or_else(Instant::now);
+            }
+            self.vb_install = VbInstall::Done(outcome);
+        }
+    }
+
     /// Change l'intervalle de relecture des périphériques (tests).
     pub fn set_device_rescan(&mut self, every: Duration) {
         self.rescan_every = every;
@@ -580,6 +675,7 @@ impl App {
 
     /// Dessine toute l'interface (appelé à chaque image).
     pub fn show(&mut self, ui: &mut egui::Ui) {
+        self.poll_vb_install();
         self.rescan_devices();
         let ctx = ui.ctx().clone();
         egui::Panel::top("top").show(ui, |ui| {

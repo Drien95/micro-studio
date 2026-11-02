@@ -21,3 +21,4 @@ pub mod engine;
 pub mod params;
 pub mod settings;
 pub mod ui;
+pub mod vbcable;

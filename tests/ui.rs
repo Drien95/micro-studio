@@ -7,6 +7,7 @@ use egui_kittest::kittest::Queryable;
 use micro_studio::engine::{AudioBackend, DeviceLists, Engine, Shared};
 use micro_studio::settings::Settings;
 use micro_studio::ui::App;
+use micro_studio::vbcable::{Outcome, Step};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -122,10 +123,93 @@ fn audio_failure_is_shown_and_does_not_open_the_assistant() {
 }
 
 #[test]
-fn missing_vb_cable_shows_a_download_link() {
+fn missing_vb_cable_offers_a_one_click_install() {
     let (h, _) = app(calibrated(), false, false);
     h.get_by_label_contains("c'est lui qui crée le micro virtuel");
-    h.get_by_label_contains("Télécharger VB-Cable");
+    h.get_by_label("Installer le micro virtuel (VB-Cable)");
+    // Mention exigée par VB-Audio pour proposer VB-Cable depuis une application.
+    h.get_by_label_contains("donationware de VB-Audio");
+    h.get_by_label("Soutenir VB-Audio");
+}
+
+/// Attend la fin du fil d'installation (simulé, donc quasi immédiat).
+fn wait_for(h: &mut Harness<'static, App>, label: &str) {
+    for _ in 0..200 {
+        h.run_steps(1);
+        if h.query_by_label_contains(label).is_some() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(h.query_by_label_contains(label).is_some(), "texte jamais affiché : {label}");
+}
+
+#[test]
+fn one_click_install_starts_the_sound_when_the_cable_appears() {
+    let (mut h, calls, shared_devices) = app_with_devices(calibrated(), false, false);
+    assert!(!h.state().is_running());
+    let installed = Arc::clone(&shared_devices);
+    h.state_mut().set_vb_installer(Arc::new(move |progress: &mut dyn FnMut(Step)| {
+        progress(Step::Downloading);
+        progress(Step::WaitingForSetup);
+        *installed.lock().expect("verrou") = devices(true);
+        Outcome::Finished
+    }));
+    h.get_by_label("Installer le micro virtuel (VB-Cable)").click();
+    for _ in 0..200 {
+        h.run_steps(1);
+        if h.state().is_running() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(h.state().is_running(), "le son démarre seul après l'installation");
+    assert!(h.query_by_label("Installer le micro virtuel (VB-Cable)").is_none());
+    assert_eq!(
+        calls.lock().expect("verrou").last().and_then(|c| c.1.clone()).as_deref(),
+        Some("CABLE Input (VB-Audio Virtual Cable)")
+    );
+}
+
+#[test]
+fn install_cancelled_or_failed_is_explained_and_can_be_retried() {
+    let (mut h, _) = app(calibrated(), false, false);
+    h.state_mut().set_vb_installer(Arc::new(|_: &mut dyn FnMut(Step)| Outcome::Cancelled));
+    h.get_by_label("Installer le micro virtuel (VB-Cable)").click();
+    wait_for(&mut h, "Installation annulée");
+    h.state_mut().set_vb_installer(Arc::new(|_: &mut dyn FnMut(Step)| Outcome::Failed("réseau coupé".into())));
+    h.get_by_label("Installer le micro virtuel (VB-Cable)").click();
+    wait_for(&mut h, "réseau coupé");
+    assert!(!h.state().is_running());
+}
+
+#[test]
+fn install_finished_but_cable_missing_suggests_a_reboot() {
+    let (mut h, _) = app(calibrated(), false, false);
+    h.state_mut().set_vb_installer(Arc::new(|progress: &mut dyn FnMut(Step)| {
+        progress(Step::Verifying);
+        Outcome::Finished
+    }));
+    h.get_by_label("Installer le micro virtuel (VB-Cable)").click();
+    wait_for(&mut h, "redémarre le PC");
+    assert!(!h.state().is_running());
+}
+
+#[test]
+fn install_progress_is_shown_while_running() {
+    let (mut h, _) = app(calibrated(), false, false);
+    let (release, wait) = std::sync::mpsc::channel::<()>();
+    let wait = Mutex::new(wait);
+    h.state_mut().set_vb_installer(Arc::new(move |progress: &mut dyn FnMut(Step)| {
+        progress(Step::WaitingForSetup);
+        let _ = wait.lock().expect("verrou").recv();
+        Outcome::Finished
+    }));
+    h.get_by_label("Installer le micro virtuel (VB-Cable)").click();
+    wait_for(&mut h, "Install Driver");
+    assert!(h.query_by_label("Installer le micro virtuel (VB-Cable)").is_none(), "pas de double lancement");
+    release.send(()).expect("fil d'installation");
+    wait_for(&mut h, "Installation de VB-Cable terminée");
 }
 
 #[test]

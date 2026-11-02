@@ -35,9 +35,9 @@ Latence totale : environ 10 ms de traitement + 20 ms de tampon.
 
 ## Installation
 
-1. Installe [VB-Cable](https://vb-audio.com/Cable/) (gratuit) et redémarre le PC. C'est lui qui crée le micro virtuel.
-2. Télécharge `micro-studio.exe` depuis l'onglet **Releases** (ou **Actions** > dernier build > *micro-studio-windows*) et lance-le.
-3. Choisis ton micro en haut ; la sortie se met d'elle-même sur *CABLE Input*.
+1. Télécharge `micro-studio.exe` depuis l'onglet **Releases** (ou **Actions** > dernier build > *micro-studio-windows*) et lance-le.
+2. Si le micro virtuel manque, clique sur **Installer le micro virtuel (VB-Cable)** : Micro Studio télécharge [VB-Cable](https://vb-audio.com/Cable/) depuis le site officiel, vérifie sa signature et ouvre son installation (accepte la demande administrateur, puis clique sur *Install Driver*). Le son démarre tout seul dès que le câble apparaît ; sinon, redémarre le PC. Choisis ensuite ton micro en haut ; la sortie se met d'elle-même sur *CABLE Input*.
+3. VB-CABLE est un donationware de VB-Audio ([www.vb-cable.com](https://www.vb-cable.com)) : toutes les participations sont les bienvenues.
 4. Lance le **Calibrage automatique**.
 5. Dans Discord, OBS ou ton jeu, choisis **CABLE Output** comme micro.
 
@@ -75,7 +75,8 @@ Pour contribuer : [CONTRIBUTING.md](CONTRIBUTING.md). Historique des versions :
 - [ ] DeepFilterNet en option « qualité maximale »
 - [ ] Écoute de contrôle dans le casque depuis l'application
 - [ ] Icône dans la barre des tâches, lancement au démarrage de Windows
-- [ ] Micro virtuel intégré (driver signé) pour se passer de VB-Cable
+- [x] Installation de VB-Cable en un clic depuis l'application
+- [ ] Micro virtuel intégré (pilote signé, prototype dans `driver/`) pour se passer de VB-Cable
 
 ## Licence
 

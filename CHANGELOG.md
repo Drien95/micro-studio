@@ -9,6 +9,13 @@ projet respecte le [versionnage sémantique](https://semver.org/lang/fr/)
 ## [Non publié]
 
 ### Ajouté
+- Bouton « Installer le micro virtuel (VB-Cable) » : téléchargement du paquet
+  officiel de VB-Audio, vérification de sa signature Authenticode, lancement
+  de l'installation en administrateur, puis démarrage automatique du son dès
+  que *CABLE Input* apparaît (module `vbcable`). Mention « donationware »
+  exigée par VB-Audio affichée à côté.
+- Prototype de pilote de micro virtuel « Micro Studio Cable » (`driver/`,
+  mode test uniquement, voir `driver/README.md`).
 - Plan de test (`docs/TESTS.md`, ISO/IEC/IEEE 29119 et niveaux ISTQB) et 98
   tests automatiques : unitaires dans chaque module, intégration, système
   (interface pilotée avec `egui_kittest`), régression sonore (empreintes de
