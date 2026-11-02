@@ -534,7 +534,7 @@ pub fn run(rec: &Recording, mut progress: impl FnMut(f32)) -> CalibrationResult 
     let candidates = candidates(&base);
     let net = Dnsmos::new().ok();
     let rated = if net.is_some() { MOS_FINALISTS + 1 } else { 0 };
-    let total = candidates.len() + FINALISTS + rated;
+    let total = candidates.len() + FINALISTS + REFINE_ROUNDS * REFINE_MOVES + rated;
     let done = std::sync::atomic::AtomicUsize::new(0);
     let mut results = evaluate_all(&candidates, &full, &mask, &layout, &done, total, &mut progress);
     results.sort_by(|a, b| b.1.total.total_cmp(&a.1.total));
@@ -545,6 +545,28 @@ pub fn run(rec: &Recording, mut progress: impl FnMut(f32)) -> CalibrationResult 
         .collect();
     results.extend(evaluate_all(&finalists, &full, &mask, &layout, &done, total, &mut progress));
     results.sort_by(|a, b| b.1.total.total_cmp(&a.1.total));
+
+    // Manche d'affinage : on part du meilleur et on retouche chaque réglage
+    // fin, un à la fois, dans les deux sens ; le pas diminue de moitié quand
+    // plus rien ne s'améliore (descente par coordonnées).
+    let mut refined = 0;
+    if let Some(best) = results.first().cloned() {
+        let mut current = best;
+        let mut step = 1.0;
+        for _ in 0..REFINE_ROUNDS {
+            let tries = refinements(&current.0, step);
+            refined += tries.len();
+            let tried = evaluate_all(&tries, &full, &mask, &layout, &done, total, &mut progress);
+            let round_best = tried.iter().max_by(|a, b| a.1.total.total_cmp(&b.1.total)).cloned();
+            results.extend(tried);
+            match round_best {
+                Some(b) if b.1.total > current.1.total => current = b,
+                _ => step *= 0.5,
+            }
+        }
+        results.sort_by(|a, b| b.1.total.total_cmp(&a.1.total));
+    }
+
     if let Some(net) = &net {
         let speech = layout.speech_samples.clone();
         let mut step = |audio: &[f32]| {
@@ -563,7 +585,55 @@ pub fn run(rec: &Recording, mut progress: impl FnMut(f32)) -> CalibrationResult 
     progress(1.0);
     let best = results.into_iter().max_by(|a, b| a.1.total.total_cmp(&b.1.total));
     let (params, score) = best.expect("au moins un candidat");
-    CalibrationResult { analysis, params, score, baseline_score, candidates_tested: candidates.len() + FINALISTS }
+    CalibrationResult {
+        analysis,
+        params,
+        score,
+        baseline_score,
+        candidates_tested: candidates.len() + FINALISTS + refined,
+    }
+}
+
+/// Tours d'affinage après le tournoi.
+const REFINE_ROUNDS: usize = 3;
+/// Retouches essayées au plus par tour (voir [`refinements`]).
+const REFINE_MOVES: usize = 20;
+
+/// Retouches d'un réglage : chaque paramètre fin, un peu plus haut puis un
+/// peu plus bas. `step` (1 au départ) règle l'ampleur des retouches. Les
+/// réglages de la porte vocale ne sont retouchés que si elle est active.
+pub fn refinements(p: &Params, step: f32) -> Vec<Params> {
+    type Move = fn(&mut Params, f32);
+    let moves: [Move; 8] = [
+        |p, d| p.gate_threshold_db = (p.gate_threshold_db + 2.0 * d).clamp(-80.0, -10.0),
+        |p, d| p.gate_release_ms = (p.gate_release_ms * (1.0 + 0.3 * d)).clamp(30.0, 600.0),
+        |p, d| p.denoise_mix = (p.denoise_mix + 0.1 * d).clamp(0.5, 1.0),
+        |p, d| p.deesser_threshold_db = (p.deesser_threshold_db + 3.0 * d).clamp(-50.0, -5.0),
+        |p, d| p.comp_threshold_db = (p.comp_threshold_db + 2.0 * d).clamp(-50.0, -5.0),
+        |p, d| p.comp_ratio = (p.comp_ratio * (1.0 + 0.2 * d)).clamp(1.5, 10.0),
+        |p, d| p.hpf_hz = (p.hpf_hz + 20.0 * d).clamp(50.0, 160.0),
+        |p, d| {
+            for b in &mut p.eq_bands {
+                b.gain_db *= 1.0 + 0.3 * d;
+            }
+        },
+    ];
+    let voice: [Move; 2] = [
+        |p, d| p.voice_gate_threshold = (p.voice_gate_threshold + 0.08 * d).clamp(0.1, 0.9),
+        |p, d| p.voice_gate_hold_ms = (p.voice_gate_hold_ms + 80.0 * d).clamp(100.0, 800.0),
+    ];
+    let active = moves.iter().chain(if p.voice_gate_enabled { &voice[..] } else { &[] });
+    let mut out = Vec::with_capacity(REFINE_MOVES);
+    for m in active {
+        for d in [step, -step] {
+            let mut q = p.clone();
+            m(&mut q, d);
+            if q != *p {
+                out.push(q);
+            }
+        }
+    }
+    out
 }
 
 /// Meilleurs réglages notés par DNSMOS à la fin du tournoi.

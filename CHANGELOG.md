@@ -15,6 +15,13 @@ projet respecte le [versionnage sémantique](https://semver.org/lang/fr/)
   est partagé avec DNSMOS.
 
 ### Ajouté
+- Calibrage : manche d'affinage après le tournoi (descente par coordonnées).
+  Partant du meilleur réglage, chaque paramètre fin (seuil et relâchement de
+  la porte, dosage du débruitage, de-esser, seuil et ratio du compresseur,
+  passe-haut, intensité de l'égaliseur, porte vocale) est retouché dans les
+  deux sens ; le pas est divisé par deux quand plus rien ne progresse
+  (3 tours, jusqu'à 60 réglages de plus). Sur les enregistrements de test, le
+  score du meilleur réglage gagne de 6 à 11 points.
 - Note de qualité perçue DNSMOS P.835 (Microsoft, ICASSP 2022) dans le
   calibrage : la voix, le bruit de fond et l'ensemble sont notés de 1 à 5
   comme le feraient des auditeurs (recommandation ITU-T P.835). Les 3
