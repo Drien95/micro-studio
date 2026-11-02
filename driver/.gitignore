@@ -1,0 +1,6 @@
+/packages/
+/tests/build/
+x64/
+ARM64/
+*.user
+.vs/

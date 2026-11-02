@@ -185,6 +185,8 @@
     <ClCompile Include="kshelper.cpp" />
     <ClCompile Include="savedata.cpp" />
     <ClCompile Include="tonegenerator.cpp" />
+    <ClCompile Include="cable.cpp" />
+    <ClCompile Include="..\..\..\core\ms_loopback.c" />
   </ItemGroup>
   <ItemGroup>
     <Inf Exclude="@(Inf)" Include="*.inf" />

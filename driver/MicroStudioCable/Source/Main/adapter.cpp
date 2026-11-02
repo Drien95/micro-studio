@@ -22,6 +22,7 @@ Abstract:
 #include "definitions.h"
 #include "endpoints.h"
 #include "minipairs.h"
+#include "cable.h"
 
 typedef void (*fnPcDriverUnload) (PDRIVER_OBJECT);
 fnPcDriverUnload gPCDriverUnloadRoutine = NULL;
@@ -322,6 +323,15 @@ Return Value:
     IF_FAILED_ACTION_JUMP(
         ntStatus,
         DPF(D_ERROR, ("Registry Configuration error 0x%x", ntStatus)),
+        Done);
+
+    //
+    // Micro Studio Cable : boucle haut-parleur virtuel -> micro virtuel.
+    //
+    ntStatus = MsCableInitialize();
+    IF_FAILED_ACTION_JUMP(
+        ntStatus,
+        DPF(D_ERROR, ("MsCableInitialize failed, 0x%x", ntStatus)),
         Done);
 
     //

@@ -4,6 +4,7 @@
 #include "endpoints.h"
 #include "minwavert.h"
 #include "minwavertstream.h"
+#include "cable.h"
 #define MINWAVERTSTREAM_POOLTAG 'SRWM'
 
 #pragma warning (disable : 4127)
@@ -303,57 +304,8 @@ Return Value:
 
     if (m_bCapture)
     {
-        ReadRegistrySettings();
-        DWORD toneFrequency = 0;
-        DWORD toneAmplitude = 0;
-        DWORD toneDCOffset = 0;
-        DWORD toneInitialPhase = 0;
-
-        double toneAmplitudeDouble = 0;
-        double toneDCOffsetDouble = 0;
-        double toneInitialPhaseDouble = 0;
-
-        toneFrequency = m_ulHostCaptureToneFrequency;
-        toneAmplitude = m_dwHostCaptureToneAmplitude;
-        toneDCOffset = m_dwHostCaptureToneDCOffset;
-        toneInitialPhase = m_dwHostCaptureToneInitialPhase;
-
-        if (labs(toneAmplitude) > 100)
-        {
-            toneAmplitude = toneAmplitude > 0 ? 100 : -100;
-        }
-
-        if (labs(toneDCOffset) > 100)
-        {
-            toneDCOffset = toneDCOffset > 0 ? 100 : -100;
-        }
-
-        DWORD abssum = labs(toneAmplitude) + labs(toneDCOffset);
-
-        if (abssum > 100)
-        {
-            toneAmplitudeDouble = ((double)toneAmplitude) / abssum;
-            toneDCOffsetDouble = ((double)toneDCOffset) / abssum;
-        }
-        else
-        {
-            toneAmplitudeDouble = ((double)toneAmplitude) / 100.0;
-            toneDCOffsetDouble = ((double)toneDCOffset) / 100.0;
-        }
-
-        if (labs(toneInitialPhase) > 31416)
-        {
-            toneInitialPhase = toneInitialPhase > 0 ? 31416 : -31416;
-        }
-
-        toneInitialPhaseDouble = (double)toneInitialPhase / 10000;
-
-        ntStatus = m_ToneGenerator.Init(toneFrequency, toneAmplitudeDouble, toneDCOffsetDouble, toneInitialPhaseDouble, m_pWfExt);
-
-        if (!NT_SUCCESS(ntStatus))
-        {
-            return ntStatus;
-        }
+        // Micro Studio Cable : le micro lit la boucle (voir cable.h),
+        // le générateur de tonalité de l'exemple n'est plus utilisé.
     }
     else if (!g_DoNotCreateDataFiles)
     {
@@ -1248,6 +1200,11 @@ NTSTATUS CMiniportWaveRTStream::SetState
 
         case KSSTATE_RUN:
             // Start DMA
+            if (m_bCapture)
+            {
+                // Micro Studio Cable : ne pas rejouer d'audio ancien.
+                MsCableCaptureStarted();
+            }
             LARGE_INTEGER ullPerfCounterTemp;
             ullPerfCounterTemp = KeQueryPerformanceCounter(&m_ullPerformanceCounterFrequency);
             m_ullLastDPCTimeStamp = m_ullDmaTimeStamp = KSCONVERT_PERFORMANCE_TIME(m_ullPerformanceCounterFrequency.QuadPart, ullPerfCounterTemp);
@@ -1332,7 +1289,7 @@ VOID CMiniportWaveRTStream::UpdatePosition
 
     if (m_bCapture)
     {
-        // Write sine wave to buffer.
+        // Micro Studio Cable : remplit le micro depuis la boucle.
         WriteBytes(ByteDisplacement);
     }
     else
@@ -1364,11 +1321,9 @@ VOID CMiniportWaveRTStream::UpdatePosition
             m_bLastBufferRendered = TRUE;
         }
 
-        if (!g_DoNotCreateDataFiles)
-        {
-            // Read from buffer and write to a file.
-            ReadBytes(ByteDisplacement);
-        }
+        // Micro Studio Cable : envoie le rendu dans la boucle (et dans un
+        // fichier si l'option de diagnostic DoNotCreateDataFiles vaut 0).
+        ReadBytes(ByteDisplacement);
     }
     
     // Increment the DMA position by the number of bytes displaced since the last
@@ -1397,7 +1352,8 @@ VOID CMiniportWaveRTStream::WriteBytes
 
 Routine Description:
 
-This function writes the audio buffer using a sine wave generator
+Micro Studio Cable : fills the capture DMA buffer from the loopback cable
+(silence when the virtual speaker has nothing to give).
 
 Arguments:
 
@@ -1413,7 +1369,7 @@ ByteDisplacement - # of bytes to process.
     {
         ULONG runWrite = min(ByteDisplacement, m_ulDmaBufferSize - bufferOffset);
         
-        m_ToneGenerator.GenerateSine(m_pDmaBuffer + bufferOffset, runWrite);
+        MsCableRead(m_pDmaBuffer + bufferOffset, runWrite, &m_pWfExt->Format);
            	
         bufferOffset = (bufferOffset + runWrite) % m_ulDmaBufferSize;
         ByteDisplacement -= runWrite;
@@ -1430,7 +1386,8 @@ VOID CMiniportWaveRTStream::ReadBytes
 
 Routine Description:
 
-This function reads the audio buffer and saves the data in a file.
+Micro Studio Cable : pushes the rendered audio into the loopback cable,
+and optionally saves it to a file (diagnostic, off by default).
 
 Arguments:
 
@@ -1445,7 +1402,11 @@ ByteDisplacement - # of bytes to process.
     while (ByteDisplacement > 0)
     {
         ULONG runWrite = min(ByteDisplacement, m_ulDmaBufferSize - bufferOffset);
-        m_SaveData.WriteData(m_pDmaBuffer + bufferOffset, runWrite);
+        MsCableWrite(m_pDmaBuffer + bufferOffset, runWrite, &m_pWfExt->Format);
+        if (!g_DoNotCreateDataFiles)
+        {
+            m_SaveData.WriteData(m_pDmaBuffer + bufferOffset, runWrite);
+        }
         bufferOffset = (bufferOffset + runWrite) % m_ulDmaBufferSize;
         ByteDisplacement -= runWrite;
     }

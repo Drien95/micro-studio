@@ -179,16 +179,16 @@
     </DriverSign>
   </ItemDefinitionGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <TargetName>SimpleAudioSample</TargetName>
+    <TargetName>MicroStudioCable</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">
-    <TargetName>SimpleAudioSample</TargetName>
+    <TargetName>MicroStudioCable</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <TargetName>SimpleAudioSample</TargetName>
+    <TargetName>MicroStudioCable</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">
-    <TargetName>SimpleAudioSample</TargetName>
+    <TargetName>MicroStudioCable</TargetName>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <Link>
