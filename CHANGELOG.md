@@ -129,6 +129,9 @@ projet respecte le [versionnage sémantique](https://semver.org/lang/fr/)
   `f32` sans destructeur), corrigée par principe.
 
 ### Corrigé
+- Calibrage : le gain de sortie des variantes de l'affinage était remplacé
+  au lieu d'être corrigé ; la voix finissait trop faible (-21,9 LUFS mesurés
+  au lieu de -18). Test de régression ajouté.
 - Après l'installation de VB-Cable, Windows prend souvent *CABLE Output* comme
   micro par défaut : Micro Studio s'écoutait alors lui-même en boucle. La
   sortie du câble n'est plus proposée comme micro et est remplacée au

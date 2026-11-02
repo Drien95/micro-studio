@@ -772,10 +772,17 @@ fn evaluate_all(
 /// Le rendu est réaligné sur l'original (retard du débruiteur et de la porte
 /// vocale) : sinon le début de chaque mot compterait comme « coupé » et les
 /// moteurs les plus lents seraient injustement pénalisés.
+///
+/// La correction s'ajoute au gain de sortie déjà présent : les variantes de
+/// l'affinage héritent du gain du meilleur réglage (bogue constaté sur le
+/// premier calibrage réel : le gain était remplacé au lieu d'être corrigé, et
+/// la voix finissait à -21,9 LUFS au lieu de -18).
 fn evaluate(mut p: Params, full: &[f32], mask: &[bool], layout: &Layout) -> (Params, Score) {
     let out = render_aligned(&p, full);
     let lufs = integrated_lufs(out.get(layout.speech_samples.clone()).unwrap_or(&out));
-    p.output_gain_db = (TARGET_LUFS - lufs).clamp(-MAX_OUTPUT_GAIN_DB, MAX_OUTPUT_GAIN_DB);
+    let correction =
+        if lufs.is_finite() && lufs > crate::dsp::loudness::SILENT_LUFS { TARGET_LUFS - lufs } else { 0.0 };
+    p.output_gain_db = (p.output_gain_db + correction).clamp(-MAX_OUTPUT_GAIN_DB, MAX_OUTPUT_GAIN_DB);
     let s = score(&render_aligned(&p, full), mask, layout);
     (p, s)
 }
@@ -843,6 +850,22 @@ mod tests {
 
     fn tone(freq: f32, amp: f32, n: usize) -> Vec<f32> {
         (0..n).map(|i| amp * (2.0 * std::f32::consts::PI * freq * i as f32 / SAMPLE_RATE).sin()).collect()
+    }
+
+    #[test]
+    fn output_gain_is_corrected_not_replaced() {
+        let (silence, speech) = synthetic_voice(3.0, -60.0, -30.0);
+        let rec = Recording { keyboard: silence.clone(), silence, speech };
+        let layout = Layout::of(&rec);
+        let full: Vec<f32> = [&rec.silence[..], &rec.keyboard[..], &rec.speech[..]].concat();
+        let mask = vec![true; full.len() / FRAME];
+        let base = propose(&analyze(&rec.silence, &rec.keyboard, &rec.speech));
+        let (first, s1) = evaluate(base, &full, &mask, &layout);
+        // Une variante héritée du meilleur réglage garde un volume correct.
+        let (second, s2) = evaluate(first.clone(), &full, &mask, &layout);
+        assert!((s1.loudness_lufs - TARGET_LUFS).abs() < 1.5, "{}", s1.loudness_lufs);
+        assert!((s2.loudness_lufs - TARGET_LUFS).abs() < 1.5, "{}", s2.loudness_lufs);
+        assert!((second.output_gain_db - first.output_gain_db).abs() < 1.5);
     }
 
     #[test]
