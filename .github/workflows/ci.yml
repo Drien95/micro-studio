@@ -109,7 +109,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-llvm-cov
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
-      - name: Mesure (le moteur audio et l'interface sont exclus : ils exigent une carte son et un écran)
+      - name: Mesure (moteur audio et interface exclus, car ils exigent une carte son et un écran)
         run: |
           cargo llvm-cov --locked --all-targets --summary-only \
             --ignore-filename-regex 'src/(engine|ui|main)\.rs' | tee coverage.txt
