@@ -209,8 +209,7 @@ pub fn ps_quote(s: &str) -> String {
 fn download_script(url: &str, dir: &Path) -> String {
     let dir = ps_quote(&dir.display().to_string());
     format!(
-        "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'\n\
-         if (Test-Path -LiteralPath {dir}) {{ Remove-Item -LiteralPath {dir} -Recurse -Force }}\n\
+        "if (Test-Path -LiteralPath {dir}) {{ Remove-Item -LiteralPath {dir} -Recurse -Force }}\n\
          New-Item -ItemType Directory -Path {dir} | Out-Null\n\
          $zip = Join-Path {dir} 'vbcable.zip'\n\
          Invoke-WebRequest -UseBasicParsing -Uri {url} -OutFile $zip\n\
@@ -222,8 +221,7 @@ fn download_script(url: &str, dir: &Path) -> String {
 
 fn signature_script(setup: &Path) -> String {
     format!(
-        "$ErrorActionPreference = 'Stop'\n\
-         $s = Get-AuthenticodeSignature -LiteralPath {}\n\
+        "$s = Get-AuthenticodeSignature -LiteralPath {}\n\
          $subject = if ($s.SignerCertificate) {{ $s.SignerCertificate.Subject }} else {{ '' }}\n\
          Write-Output (\"{{0}}|{{1}}\" -f $s.Status, $subject)\n",
         ps_quote(&setup.display().to_string())
@@ -233,14 +231,69 @@ fn signature_script(setup: &Path) -> String {
 fn launch_script(setup: &Path) -> String {
     let setup = ps_quote(&setup.display().to_string());
     format!(
-        "$ErrorActionPreference = 'Stop'\n\
-         try {{\n\
+        "try {{\n\
          \x20 $p = Start-Process -FilePath {setup} -WorkingDirectory (Split-Path -LiteralPath {setup}) -Verb RunAs -Wait -PassThru\n\
          }} catch {{ exit {EXIT_CANCELLED} }}\n\
          # Le code de retour du programme de VB-Audio n'est pas documenté :\n\
          # le succès se juge à l'apparition de CABLE Input (voir l'interface).\n\
          exit 0\n"
     )
+}
+
+/// Préambule et gestion d'erreur communs à tous les scripts : toute
+/// exception est écrite en clair sur la sortie standard (`ERREUR: …`) au lieu
+/// du flux d'erreur, que PowerShell sérialise en CLIXML illisible.
+fn wrap_script(body: &str) -> String {
+    format!(
+        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n\
+         $ErrorActionPreference = 'Stop'\n\
+         $ProgressPreference = 'SilentlyContinue'\n\
+         try {{\n{body}}} catch {{\n\
+         \x20 [Console]::Out.WriteLine('{ERROR_PREFIX}' + $_.Exception.Message)\n\
+         \x20 exit 1\n\
+         }}\n"
+    )
+}
+
+/// Préfixe des messages d'erreur écrits par [`wrap_script`].
+const ERROR_PREFIX: &str = "ERREUR: ";
+
+/// Message lisible d'un échec PowerShell : d'abord la ligne `ERREUR: …` de la
+/// sortie standard, sinon le texte des erreurs CLIXML, sinon la sortie brute.
+#[must_use]
+pub fn failure_message(stdout: &str, stderr: &str) -> String {
+    if let Some(line) = stdout.lines().find_map(|l| l.trim().strip_prefix(ERROR_PREFIX)) {
+        return line.trim().to_owned();
+    }
+    let from_clixml = clixml_errors(stderr);
+    if !from_clixml.is_empty() {
+        return from_clixml;
+    }
+    let raw = if stderr.trim().is_empty() { stdout } else { stderr };
+    first_line(raw).to_owned()
+}
+
+/// Extrait le texte des éléments `<S S="Error">` d'un flux CLIXML.
+fn clixml_errors(s: &str) -> String {
+    let mut text = String::new();
+    let mut rest = s;
+    // Borne : un flux d'erreur ne contient jamais plus de quelques centaines d'éléments.
+    for _ in 0..1_000 {
+        let Some(start) = rest.find("<S S=\"Error\">") else { break };
+        rest = &rest[start + "<S S=\"Error\">".len()..];
+        let Some(end) = rest.find("</S>") else { break };
+        text.push_str(&rest[..end]);
+        rest = &rest[end..];
+    }
+    let decoded = text
+        .replace("_x000D_", "")
+        .replace("_x000A_", " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&");
+    decoded.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn file_name(path: &str) -> &str {
@@ -281,9 +334,17 @@ pub struct PowerShell;
 
 impl Shell for PowerShell {
     fn run(&self, script: &str) -> Result<String, (i32, String)> {
-        let mut cmd = std::process::Command::new("powershell.exe");
-        cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand"])
-            .arg(encode_command(script));
+        // Chemin complet : pas de détournement par un powershell.exe placé dans le PATH.
+        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+        let exe = Path::new(&root).join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+        let mut cmd = std::process::Command::new(exe);
+        cmd.args(["-NoProfile", "-NonInteractive", "-OutputFormat", "Text", "-ExecutionPolicy", "Bypass"])
+            .arg("-EncodedCommand")
+            .arg(encode_command(&wrap_script(script)))
+            // Hérité de PowerShell 7 (terminal, éditeur…), PSModulePath fait
+            // charger à Windows PowerShell 5.1 des modules incompatibles :
+            // Get-AuthenticodeSignature échoue alors. On laisse 5.1 le recalculer.
+            .env_remove("PSModulePath");
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -295,8 +356,8 @@ impl Shell for PowerShell {
         if out.status.success() {
             Ok(stdout)
         } else {
-            let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-            Err((out.status.code().unwrap_or(-1), if stderr.trim().is_empty() { stdout } else { stderr }))
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            Err((out.status.code().unwrap_or(-1), failure_message(&stdout, &stderr)))
         }
     }
 
@@ -392,6 +453,31 @@ mod tests {
         assert!(signature_script(&setup).contains("Get-AuthenticodeSignature"));
         let launch = launch_script(&setup);
         assert!(launch.contains("-Verb RunAs") && launch.contains(&format!("exit {EXIT_CANCELLED}")));
+    }
+
+    #[test]
+    fn failures_are_readable_even_from_clixml() {
+        // Cas réel vu sur le PC d'Adrien : seul « #< CLIXML » était affiché.
+        let clixml = "#< CLIXML\r\n<Objs Version=\"1.1.0.1\" xmlns=\"http://schemas.microsoft.com/powershell/2004/04\">\
+            <S S=\"Error\">Le module &apos;Microsoft.PowerShell.Security&apos; n&apos;a pas pu être chargé._x000D__x000A_</S>\
+            <S S=\"Error\">    + CategoryInfo : &lt;inconnu&gt;_x000D__x000A_</S></Objs>";
+        assert_eq!(
+            failure_message("", clixml),
+            "Le module 'Microsoft.PowerShell.Security' n'a pas pu être chargé. + CategoryInfo : <inconnu>"
+        );
+        assert_eq!(failure_message("bla\nERREUR: accès refusé\n", clixml), "accès refusé");
+        assert_eq!(failure_message("sortie\n", ""), "sortie");
+        assert_eq!(failure_message("", "  \nerreur brute\n"), "erreur brute");
+        assert_eq!(failure_message("", "<S S=\"Error\">non fermé"), "<S S=\"Error\">non fermé");
+    }
+
+    #[test]
+    fn every_script_reports_errors_on_stdout() {
+        let wrapped = wrap_script("Get-Thing\n");
+        assert!(wrapped.contains("$ErrorActionPreference = 'Stop'"));
+        assert!(wrapped.contains("$ProgressPreference = 'SilentlyContinue'"));
+        assert!(wrapped.contains("try {\nGet-Thing\n} catch {"));
+        assert!(wrapped.contains(&format!("'{ERROR_PREFIX}'")));
     }
 
     #[test]
