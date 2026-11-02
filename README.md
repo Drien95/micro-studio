@@ -41,7 +41,7 @@ Latence totale : environ 10 ms de traitement + 20 ms de tampon.
 4. Lance le **Calibrage automatique**.
 5. Dans Discord, OBS ou ton jeu, choisis **CABLE Output** comme micro.
 
-Pour t'entendre : Paramètres Windows > Son > *CABLE Output* > Propriétés > Écouter > cocher « Écouter ce périphérique ».
+Pour t'entendre : coche **M'écouter dans le casque** sous les vumètres et choisis ton casque.
 
 Les réglages sont sauvegardés dans `%APPDATA%\micro-studio\settings.json` et rechargés au démarrage.
 
@@ -74,7 +74,7 @@ mêmes vérifications que GitHub. Pour contribuer : [CONTRIBUTING.md](CONTRIBUTI
 - [x] Calibrage automatique avec tournoi de réglages
 - [ ] Note de qualité par IA (DNSMOS, modèle ONNX de Microsoft) dans le tournoi
 - [ ] DeepFilterNet en option « qualité maximale »
-- [ ] Écoute de contrôle dans le casque depuis l'application
+- [x] Écoute de contrôle dans le casque depuis l'application (« M'écouter dans le casque »)
 - [ ] Icône dans la barre des tâches, lancement au démarrage de Windows
 - [x] Installation de VB-Cable en un clic depuis l'application
 - [ ] Micro virtuel intégré (pilote signé, prototype dans `driver/`) pour se passer de VB-Cable

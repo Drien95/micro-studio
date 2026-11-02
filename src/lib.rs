@@ -18,6 +18,7 @@
 pub mod calibrate;
 pub mod dsp;
 pub mod engine;
+pub mod monitor;
 pub mod params;
 pub mod settings;
 pub mod ui;

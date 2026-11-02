@@ -5,6 +5,7 @@
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use micro_studio::engine::{AudioBackend, DeviceLists, Engine, Shared};
+use micro_studio::monitor::{Monitor, MonitorBackend, MonitorShared};
 use micro_studio::settings::Settings;
 use micro_studio::ui::App;
 use micro_studio::vbcable::{Outcome, Step};
@@ -323,4 +324,64 @@ fn without_a_real_microphone_the_loop_is_refused() {
     let app = App::with_backend(calibrated(), Box::new(backend), None);
     assert!(!app.is_running());
     assert!(app.error().is_some_and(|e| e.contains("Aucun vrai micro")));
+}
+
+type MonitorCalls = Arc<Mutex<Vec<(String, String)>>>;
+
+/// Faux retour casque : note chaque démarrage (source, sortie).
+struct FakeMonitor {
+    default_output: Option<String>,
+    calls: MonitorCalls,
+}
+
+impl MonitorBackend for FakeMonitor {
+    fn default_output(&self) -> Option<String> {
+        self.default_output.clone()
+    }
+
+    fn start(&self, _: &Arc<MonitorShared>, source: &str, sink: &str) -> anyhow::Result<Monitor> {
+        self.calls.lock().expect("verrou de test").push((source.to_owned(), sink.to_owned()));
+        Ok(Monitor::detached(source, sink))
+    }
+}
+
+fn with_fake_monitor(h: &mut Harness<'static, App>, default_output: Option<&str>) -> MonitorCalls {
+    let calls = MonitorCalls::default();
+    h.state_mut().set_monitor_backend(Box::new(FakeMonitor {
+        default_output: default_output.map(str::to_owned),
+        calls: Arc::clone(&calls),
+    }));
+    calls
+}
+
+#[test]
+fn listen_to_myself_plays_the_cable_in_the_headphones() {
+    let (mut h, _) = app_with_cable_as_default_mic(calibrated());
+    // Windows a pris le câble comme sortie par défaut : il ne doit pas servir au retour.
+    let calls = with_fake_monitor(&mut h, Some("CABLE Input (VB-Audio Virtual Cable)"));
+    // Libellé + contrôle qu'il nomme (lecteurs d'écran).
+    assert!(h.query_all_by_label("Casque :").count() >= 1);
+    assert!(h.query_all_by_label("Volume :").count() >= 2, "le curseur de volume porte un nom accessible");
+    h.get_by_label("M'écouter dans le casque").click();
+    h.run_steps(2);
+    assert!(h.state().is_monitoring());
+    assert_eq!(
+        calls.lock().expect("verrou").last().cloned(),
+        Some(("CABLE Output (VB-Audio Virtual Cable)".to_owned(), "Haut-parleurs".to_owned()))
+    );
+
+    h.get_by_label("M'écouter dans le casque").click();
+    h.run_steps(2);
+    assert!(!h.state().is_monitoring());
+}
+
+#[test]
+fn listen_to_myself_without_the_cable_explains_why() {
+    let (mut h, _) = app(calibrated(), true, false);
+    let calls = with_fake_monitor(&mut h, Some("Haut-parleurs"));
+    h.get_by_label("M'écouter dans le casque").click();
+    h.run_steps(2);
+    assert!(!h.state().is_monitoring());
+    assert!(calls.lock().expect("verrou").is_empty());
+    h.get_by_label_contains("CABLE Output) est introuvable");
 }

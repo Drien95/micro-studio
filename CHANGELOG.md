@@ -9,6 +9,10 @@ projet respecte le [versionnage sémantique](https://semver.org/lang/fr/)
 ## [Non publié]
 
 ### Ajouté
+- Retour casque « M'écouter dans le casque » (module `monitor`) : rejoue le
+  son tel que le reçoivent Discord ou OBS (capté sur *CABLE Output*), avec choix
+  du casque et volume. Le câble virtuel n'est jamais utilisé comme sortie du
+  retour, pour éviter une boucle.
 - Bouton « Installer le micro virtuel (VB-Cable) » : téléchargement du paquet
   officiel de VB-Audio, vérification de sa signature Authenticode, lancement
   de l'installation en administrateur, puis démarrage automatique du son dès

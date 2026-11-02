@@ -2,6 +2,7 @@
 
 use crate::calibrate::{self, CalibrationResult};
 use crate::engine::{self, AudioBackend, CpalBackend, DeviceLists, Engine, INTERNAL_RATE, Shared};
+use crate::monitor::{self, CpalMonitor, Monitor, MonitorBackend, MonitorShared};
 use crate::params::{EqKind, Params, builtin_presets};
 use crate::settings::Settings;
 use crate::vbcable::{self, Outcome, Step};
@@ -61,7 +62,18 @@ pub struct App {
     rescan_every: Duration,
     vb_install: VbInstall,
     vb_installer: VbInstaller,
+    monitor_backend: Box<dyn MonitorBackend>,
+    monitor_shared: Arc<MonitorShared>,
+    monitor: Option<Monitor>,
+    /// Sortie choisie pour le retour (`None` : sortie par défaut de Windows).
+    monitor_sink: Option<String>,
+    /// Volume du retour, en pourcentage.
+    monitor_volume: f32,
+    monitor_error: Option<String>,
 }
+
+/// Volume de départ du retour casque (pourcentage).
+const MONITOR_DEFAULT_VOLUME: f32 = 80.0;
 
 /// Intervalle par défaut de relecture des périphériques quand le moteur est
 /// arrêté : un câble virtuel ou un micro branché après le lancement est vu seul.
@@ -98,6 +110,12 @@ impl App {
             last_scan: Instant::now(),
             rescan_every: DEVICE_RESCAN,
             vb_install: VbInstall::Idle,
+            monitor_backend: Box::new(CpalMonitor),
+            monitor_shared: MonitorShared::new(MONITOR_DEFAULT_VOLUME / 100.0),
+            monitor: None,
+            monitor_sink: None,
+            monitor_volume: MONITOR_DEFAULT_VOLUME,
+            monitor_error: None,
             vb_installer: Arc::new(|progress: &mut dyn FnMut(Step)| {
                 vbcable::install(&vbcable::PowerShell, &vbcable::default_work_dir(), vbcable::Arch::current(), progress)
             }),
@@ -670,6 +688,91 @@ impl App {
         }
     }
 
+    /// Remplace l'accès matériel du retour casque (tests).
+    pub fn set_monitor_backend(&mut self, backend: Box<dyn MonitorBackend>) {
+        self.monitor = None;
+        self.monitor_backend = backend;
+    }
+
+    /// Vrai si le retour casque est actif.
+    pub fn is_monitoring(&self) -> bool {
+        self.monitor.is_some()
+    }
+
+    /// Démarre (ou redémarre) le retour casque.
+    fn start_monitor(&mut self) {
+        self.monitor = None;
+        let Some(source) = monitor::find_source(&self.devices.inputs) else {
+            self.monitor_error =
+                Some("Le micro virtuel (CABLE Output) est introuvable : installe d'abord VB-Cable.".into());
+            return;
+        };
+        let default = self.monitor_backend.default_output();
+        let Some(sink) = monitor::pick_sink(self.monitor_sink.as_deref(), default.as_deref(), &self.devices.outputs)
+        else {
+            self.monitor_error = Some("Aucun casque ni haut-parleur trouvé pour le retour.".into());
+            return;
+        };
+        match self.monitor_backend.start(&self.monitor_shared, &source, &sink) {
+            Ok(m) => {
+                self.monitor = Some(m);
+                self.monitor_error = None;
+            }
+            Err(e) => self.monitor_error = Some(format!("Retour casque impossible : {e:#}")),
+        }
+    }
+
+    /// Ligne « M'écouter » : case à cocher, choix du casque et volume.
+    fn monitor_row(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            let mut on = self.monitor.is_some();
+            ui.checkbox(&mut on, "M'écouter dans le casque").on_hover_text(
+                "Rejoue dans ton casque ce que Discord ou OBS reçoivent, avec un léger décalage. \
+                 À couper une fois les réglages faits.",
+            );
+            if on != self.monitor.is_some() {
+                if on {
+                    self.start_monitor();
+                } else {
+                    self.monitor = None;
+                    self.monitor_error = None;
+                }
+            }
+
+            let label = ui.label("Casque :");
+            let current = self.monitor.as_ref().map(|m| m.sink.clone()).or_else(|| self.monitor_sink.clone());
+            let mut wanted = self.monitor_sink.clone();
+            egui::ComboBox::from_id_salt("casque")
+                .selected_text(current.unwrap_or_else(|| "Par défaut".into()))
+                .width(220.0)
+                .show_ui(ui, |ui| {
+                    for n in monitor::sink_choices(&self.devices.outputs) {
+                        ui.selectable_value(&mut wanted, Some(n.clone()), n);
+                    }
+                })
+                .response
+                .labelled_by(label.id);
+            if wanted != self.monitor_sink {
+                self.monitor_sink = wanted;
+                if self.monitor.is_some() {
+                    self.start_monitor();
+                }
+            }
+
+            let label = ui.label("Volume :");
+            let changed = ui
+                .add(egui::Slider::new(&mut self.monitor_volume, 0.0..=100.0).suffix(" %").integer())
+                .labelled_by(label.id)
+                .changed();
+            if changed {
+                self.monitor_shared.volume.store(monitor::clamp_volume(self.monitor_volume / 100.0));
+            }
+        });
+        if let Some(err) = &self.monitor_error {
+            ui.label(RichText::new(err).color(Color32::from_rgb(220, 80, 60)));
+        }
+    }
+
     /// Change l'intervalle de relecture des périphériques (tests).
     pub fn set_device_rescan(&mut self, every: Duration) {
         self.rescan_every = every;
@@ -704,6 +807,7 @@ impl App {
             self.meters(ui);
             ui.add_space(4.0);
             self.quick_actions(ui);
+            self.monitor_row(ui);
             ui.add_space(6.0);
         });
         egui::CentralPanel::default_margins().show(ui, |ui| {
