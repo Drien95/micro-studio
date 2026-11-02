@@ -24,7 +24,7 @@ cpal = "0.18"
 dirs = "7.0.0"
 eframe = "0.37"
 nnnoiseless = "0.5"
-ringbuf = "0.4"
+ringbuf = "0.6"
 rustfft = "6.4.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

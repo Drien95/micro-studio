@@ -39,7 +39,15 @@ pub struct App {
     held_in: f32,
     held_out: f32,
     last_save: Option<Instant>,
+    /// Dernière lecture de la liste des périphériques.
+    last_scan: Instant,
+    /// Intervalle de relecture des périphériques tant que le son est arrêté.
+    rescan_every: Duration,
 }
+
+/// Intervalle par défaut de relecture des périphériques quand le moteur est
+/// arrêté : un câble virtuel ou un micro branché après le lancement est vu seul.
+pub const DEVICE_RESCAN: Duration = Duration::from_millis(2500);
 
 impl std::fmt::Debug for App {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -69,6 +77,8 @@ impl App {
             held_in: -90.0,
             held_out: -90.0,
             last_save: None,
+            last_scan: Instant::now(),
+            rescan_every: DEVICE_RESCAN,
         };
         // Clé en main : on démarre tout de suite avec les derniers périphériques.
         app.start_engine();
@@ -119,28 +129,36 @@ impl App {
         let mut restart = false;
         ui.horizontal(|ui| {
             let mut input = self.settings.input_device.clone();
-            egui::ComboBox::from_label("Micro")
+            // Libellé avant la liste : on lit « Micro : … » puis « Sortie : … ».
+            let label = ui.label("Micro :");
+            egui::ComboBox::from_id_salt("micro")
                 .selected_text(input.clone().unwrap_or_else(|| "Par défaut".into()))
                 .width(260.0)
                 .show_ui(ui, |ui| {
                     for n in &self.devices.inputs {
                         ui.selectable_value(&mut input, Some(n.clone()), n);
                     }
-                });
+                })
+                .response
+                .labelled_by(label.id);
             if input != self.settings.input_device {
                 self.settings.input_device = input;
                 restart = true;
             }
 
             let mut output = self.settings.output_device.clone();
-            egui::ComboBox::from_label("Sortie (micro virtuel)")
+            ui.add_space(8.0);
+            let label = ui.label("Sortie (micro virtuel) :");
+            egui::ComboBox::from_id_salt("sortie")
                 .selected_text(output.clone().unwrap_or_else(|| "VB-Cable".into()))
                 .width(260.0)
                 .show_ui(ui, |ui| {
                     for n in &self.devices.outputs {
                         ui.selectable_value(&mut output, Some(n.clone()), n);
                     }
-                });
+                })
+                .response
+                .labelled_by(label.id);
             if output != self.settings.output_device {
                 self.settings.output_device = output;
                 restart = true;
@@ -228,18 +246,23 @@ impl App {
 
             ui.separator();
             let mut chosen: Option<Params> = None;
-            egui::ComboBox::from_label("Préréglage").selected_text("Choisir…").show_ui(ui, |ui| {
-                for (name, p) in builtin_presets() {
-                    if ui.selectable_label(false, name).clicked() {
-                        chosen = Some(p);
+            let label = ui.label("Préréglage :");
+            egui::ComboBox::from_id_salt("presets")
+                .selected_text("Choisir…")
+                .show_ui(ui, |ui| {
+                    for (name, p) in builtin_presets() {
+                        if ui.selectable_label(false, name).clicked() {
+                            chosen = Some(p);
+                        }
                     }
-                }
-                for (name, p) in &self.settings.user_presets {
-                    if ui.selectable_label(false, format!("Perso : {name}")).clicked() {
-                        chosen = Some(p.clone());
+                    for (name, p) in &self.settings.user_presets {
+                        if ui.selectable_label(false, format!("Perso : {name}")).clicked() {
+                            chosen = Some(p.clone());
+                        }
                     }
-                }
-            });
+                })
+                .response
+                .labelled_by(label.id);
             if let Some(mut p) = chosen {
                 // Un préréglage garde le gain d'entrée mesuré pour ce micro.
                 p.input_gain_db = self.settings.params.input_gain_db;
@@ -533,8 +556,31 @@ impl App {
         !matches!(self.calib, Calib::Idle)
     }
 
+    /// Change l'intervalle de relecture des périphériques (tests).
+    pub fn set_device_rescan(&mut self, every: Duration) {
+        self.rescan_every = every;
+    }
+
+    /// Tant que le son est arrêté, relit régulièrement les périphériques. Si
+    /// aucune sortie n'a encore été choisie et que VB-Cable vient d'apparaître
+    /// (installé pendant que le logiciel tournait), démarre tout seul.
+    fn rescan_devices(&mut self) {
+        if self.engine.is_some() || self.last_scan.elapsed() < self.rescan_every {
+            return;
+        }
+        self.last_scan = Instant::now();
+        self.devices = self.backend.list_devices();
+        if self.settings.output_device.is_none() && engine::find_virtual_cable(&self.devices.outputs).is_some() {
+            self.start_engine();
+            if self.engine.is_some() && !self.settings.calibrated {
+                self.calib = Calib::Intro;
+            }
+        }
+    }
+
     /// Dessine toute l'interface (appelé à chaque image).
     pub fn show(&mut self, ui: &mut egui::Ui) {
+        self.rescan_devices();
         let ctx = ui.ctx().clone();
         egui::Panel::top("top").show(ui, |ui| {
             ui.add_space(6.0);

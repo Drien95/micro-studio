@@ -19,7 +19,7 @@ test ISTQB**. Dernière mise à jour : 2 novembre 2026.
 |---|---|---|---|
 | **Unitaire** (composant) | `#[cfg(test)] mod tests` dans chaque fichier de `src/` | Chaque fonction isolément : réponse en fréquence des filtres, courbe du compresseur, hystérésis du gate, rapport du rééchantillonneur, découpage en trames du moteur, amorçage et coupures de la sortie, analyse du calibrage, sauvegarde atomique… | `cargo test --lib` |
 | **Intégration** (composants assemblés) | `tests/robustness.rs`, `tests/calibration.rs`, `tests/settings.rs`, `tests/realtime.rs` | La chaîne complète, le calibrage de bout en bout, la compatibilité des fichiers de réglages, l'absence d'allocation en temps réel | `cargo test --tests` |
-| **Système** (application entière) | `tests/ui.rs` | L'application pilotée comme un utilisateur (clics, textes affichés) avec un faux périphérique audio : démarrage automatique sur VB-Cable, assistant de calibrage, panne de micro, préréglages | `cargo test --test ui` |
+| **Système** (application entière) | `tests/ui.rs` | L'application pilotée comme un utilisateur (clics, textes affichés) avec un faux périphérique audio : démarrage automatique sur VB-Cable, détection de VB-Cable installé en cours de route, assistant de calibrage, panne de micro, préréglages | `cargo test --test ui` |
 | **Régression** | `tests/regression.rs` + `tests/golden/presets.json` | L'« empreinte » sonore de chaque préréglage (niveau par tranche de 100 ms) ne change pas à plus de 0,05 dB près | `cargo test --test regression` |
 | **Propriétés** (aléatoire) | `tests/properties.rs` | Des centaines de réglages et signaux aléatoires : sortie finie, plafond respecté, déterminisme, silence préservé, aller-retour JSON | `cargo test --test properties` |
 | **Acceptation** | Manuel, voir §5 | Le son avec le vrai micro, sur le PC de l'utilisateur | Protocole ci-dessous |
@@ -76,8 +76,8 @@ Une pull request n'est fusionnée que si, dans la CI :
 
 - tous les tests passent sous Windows, Linux et macOS ;
 - clippy (pedantic) et rustfmt ne signalent rien ;
-- la couverture de lignes reste au-dessus du seuil fixé dans
-  `.github/workflows/ci.yml` ;
+- la couverture de lignes reste au-dessus de 85 % (seuil fixé dans
+  `.github/workflows/ci.yml` ; 88,6 % au 2 novembre 2026) ;
 - `cargo deny` ne signale aucune faille connue ni licence interdite.
 
 ## 7. Ajouter un test
