@@ -111,6 +111,25 @@ impl App {
     }
 
     fn start_engine(&mut self) {
+        self.start_engine_once();
+        // Jamais la sortie du câble comme micro (boucle sans fin) : Windows en
+        // fait souvent le micro par défaut juste après l'installation de
+        // VB-Cable. On bascule alors sur le premier vrai micro.
+        let looped = self.engine.as_ref().is_some_and(|e| vbcable::is_cable_loopback_input(&e.input_name))
+            || self.settings.input_device.as_deref().is_some_and(vbcable::is_cable_loopback_input);
+        if looped {
+            self.engine = None;
+            if let Some(mic) = vbcable::first_real_microphone(&self.devices.inputs) {
+                self.settings.input_device = Some(mic);
+                self.start_engine_once();
+            } else {
+                self.settings.input_device = None;
+                self.error = Some("Aucun vrai micro trouvé : branche ton micro puis clique sur Rafraîchir.".into());
+            }
+        }
+    }
+
+    fn start_engine_once(&mut self) {
         self.engine = None;
         let out = self.settings.output_device.clone().or_else(|| engine::find_virtual_cable(&self.devices.outputs));
         match self.backend.start(&self.shared, self.settings.input_device.as_deref(), out.as_deref()) {
@@ -157,7 +176,7 @@ impl App {
                 .selected_text(input.clone().unwrap_or_else(|| "Par défaut".into()))
                 .width(260.0)
                 .show_ui(ui, |ui| {
-                    for n in &self.devices.inputs {
+                    for n in self.devices.inputs.iter().filter(|n| !vbcable::is_cable_loopback_input(n)) {
                         ui.selectable_value(&mut input, Some(n.clone()), n);
                     }
                 })

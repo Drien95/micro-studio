@@ -48,6 +48,10 @@ projet respecte le [versionnage sémantique](https://semver.org/lang/fr/)
   `f32` sans destructeur), corrigée par principe.
 
 ### Corrigé
+- Après l'installation de VB-Cable, Windows prend souvent *CABLE Output* comme
+  micro par défaut : Micro Studio s'écoutait alors lui-même en boucle. La
+  sortie du câble n'est plus proposée comme micro et est remplacée au
+  démarrage par le premier vrai micro.
 - Les libellés « Micro » et « Sortie » s'affichaient après leur liste, ce qui
   laissait croire que « VB-Cable » était le micro ; ils sont maintenant avant.
 - Le de-esser n'atténuait les sifflantes que d'environ 0,7 dB au lieu de la

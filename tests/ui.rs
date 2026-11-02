@@ -35,7 +35,10 @@ impl AudioBackend for FakeBackend {
         if output.is_none() {
             anyhow::bail!("VB-Cable n'est pas installé : choisis une sortie ou installe VB-Cable");
         }
-        Ok(Engine::detached(input.unwrap_or("Micro USB"), output.unwrap_or("Sortie"), 48_000, 48_000))
+        // Micro par défaut de Windows : le premier de la liste.
+        let default_input = self.devices.lock().expect("verrou de test").inputs.first().cloned();
+        let input = input.map(str::to_owned).or(default_input).unwrap_or_else(|| "Micro USB".to_owned());
+        Ok(Engine::detached(&input, output.unwrap_or("Sortie"), 48_000, 48_000))
     }
 }
 
@@ -280,4 +283,44 @@ fn device_lists_are_labelled_before_the_list() {
     let micro = h.get_by_label("Micro :").rect();
     let sortie = h.get_by_label("Sortie (micro virtuel) :").rect();
     assert!(micro.left() < sortie.left());
+}
+
+/// Cas réel : après l'installation de VB-Cable, Windows prend *CABLE Output*
+/// comme micro par défaut ; Micro Studio s'écoutait alors lui-même en boucle.
+fn app_with_cable_as_default_mic(settings: Settings) -> (Harness<'static, App>, Calls) {
+    let calls = Calls::default();
+    let mut lists = devices(true);
+    lists.inputs.insert(0, "CABLE Output (VB-Audio Virtual Cable)".to_owned());
+    let backend = FakeBackend { devices: Arc::new(Mutex::new(lists)), fail: false, calls: Arc::clone(&calls) };
+    let app = App::with_backend(settings, Box::new(backend), None);
+    let mut harness =
+        Harness::builder().with_size([900.0, 760.0]).build_ui_state(|ui, app: &mut App| app.show(ui), app);
+    harness.run_steps(2);
+    (harness, calls)
+}
+
+#[test]
+fn the_cable_output_is_never_used_as_the_microphone() {
+    let (h, calls) = app_with_cable_as_default_mic(calibrated());
+    assert!(h.state().is_running());
+    assert_eq!(h.state().settings().input_device.as_deref(), Some("Micro USB"));
+    assert_eq!(calls.lock().expect("verrou").last().and_then(|c| c.0.clone()).as_deref(), Some("Micro USB"));
+
+    // Même réglage enregistré par une version précédente : corrigé au démarrage.
+    let saved = Settings { input_device: Some("CABLE Output (VB-Audio Virtual Cable)".to_owned()), ..calibrated() };
+    let (h, _) = app_with_cable_as_default_mic(saved);
+    assert_eq!(h.state().settings().input_device.as_deref(), Some("Micro USB"));
+}
+
+#[test]
+fn without_a_real_microphone_the_loop_is_refused() {
+    let calls = Calls::default();
+    let lists = DeviceLists {
+        inputs: vec!["CABLE Output (VB-Audio Virtual Cable)".to_owned()],
+        outputs: vec!["CABLE Input (VB-Audio Virtual Cable)".to_owned()],
+    };
+    let backend = FakeBackend { devices: Arc::new(Mutex::new(lists)), fail: false, calls };
+    let app = App::with_backend(calibrated(), Box::new(backend), None);
+    assert!(!app.is_running());
+    assert!(app.error().is_some_and(|e| e.contains("Aucun vrai micro")));
 }

@@ -201,6 +201,22 @@ pub fn is_trusted_signature(output: &str) -> bool {
     status.trim() == "Valid" && publisher
 }
 
+/// Vrai si cette entrée est la sortie du câble virtuel (*CABLE Output*) : la
+/// prendre comme micro ferait écouter à Micro Studio sa propre sortie, en
+/// boucle. Windows en fait souvent le micro par défaut juste après
+/// l'installation de VB-Cable.
+#[must_use]
+pub fn is_cable_loopback_input(name: &str) -> bool {
+    let name = name.to_lowercase();
+    name.contains("cable output") || name.contains("vb-audio virtual cable")
+}
+
+/// Premier vrai micro de la liste (tout sauf la sortie du câble virtuel).
+#[must_use]
+pub fn first_real_microphone(inputs: &[String]) -> Option<String> {
+    inputs.iter().find(|n| !is_cable_loopback_input(n)).cloned()
+}
+
 /// Dossier de travail par défaut (`%TEMP%\micro-studio-vbcable`).
 #[must_use]
 pub fn default_work_dir() -> PathBuf {
@@ -492,6 +508,16 @@ mod tests {
         assert!(wrapped.contains("$ProgressPreference = 'SilentlyContinue'"));
         assert!(wrapped.contains("try {\nGet-Thing\n} catch {"));
         assert!(wrapped.contains(&format!("'{ERROR_PREFIX}'")));
+    }
+
+    #[test]
+    fn the_cable_output_is_never_taken_as_the_microphone() {
+        assert!(is_cable_loopback_input("CABLE Output (VB-Audio Virtual Cable)"));
+        assert!(is_cable_loopback_input("Micro (VB-Audio Virtual Cable)"));
+        assert!(!is_cable_loopback_input("Micro (Guitar Hero USB)"));
+        let inputs = names(&["CABLE Output (VB-Audio Virtual Cable)", "Micro (USB Audio Device)"]);
+        assert_eq!(first_real_microphone(&inputs).as_deref(), Some("Micro (USB Audio Device)"));
+        assert_eq!(first_real_microphone(&inputs[..1]), None);
     }
 
     #[test]
