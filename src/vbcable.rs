@@ -180,10 +180,15 @@ pub fn pick_setup(files: &[String], arch: Arch) -> Option<String> {
     }
 }
 
-/// Vrai si la sortie du script de vérification de signature décrit une signature valide de VB-Audio.
+/// Vrai si la sortie du script de vérification de signature décrit une
+/// signature valide de VB-Audio.
 ///
-/// Format attendu : `Statut|Sujet du certificat`, par exemple
-/// `Valid|CN=Vincent Burel, O=Vincent Burel, L=…`.
+/// Format attendu : `Statut|Sujet du certificat`. Le certificat EV de
+/// VB-Audio (vérifié sur `VBCABLE_Setup_x64.exe` du Pack45) a pour sujet
+/// `CN=BUREL VINCENT Entrepreneur individuel, O=BUREL VINCENT Entrepreneur
+/// individuel, …, SERIALNUMBER=423 734 177, …` : on exige un statut `Valid`
+/// (chaîne de confiance Windows) et l'identité de l'éditeur, par son numéro
+/// d'entreprise (SIREN, stable d'un renouvellement à l'autre) ou son nom.
 #[must_use]
 pub fn is_trusted_signature(output: &str) -> bool {
     let line = first_line(output);
@@ -191,7 +196,9 @@ pub fn is_trusted_signature(output: &str) -> bool {
         return false;
     };
     let subject = subject.to_ascii_lowercase();
-    status.trim() == "Valid" && (subject.contains("vincent burel") || subject.contains("vb-audio"))
+    let publisher = subject.contains("serialnumber=423 734 177")
+        || ["burel vincent", "vincent burel", "vb-audio"].iter().any(|n| subject.contains(n));
+    status.trim() == "Valid" && publisher
 }
 
 /// Dossier de travail par défaut (`%TEMP%\micro-studio-vbcable`).
@@ -423,6 +430,13 @@ mod tests {
 
     #[test]
     fn only_a_valid_vb_audio_signature_is_trusted() {
+        // Sujet réel relevé sur le PC d'Adrien le 2026-11-02 (Pack45, x64).
+        let real = "Valid|CN=BUREL VINCENT Entrepreneur individuel, O=BUREL VINCENT Entrepreneur individuel, \
+                    STREET=21 avenue des Marguerites, L=Eymet, S=Dordogne, C=FR, \
+                    OID.1.3.6.1.4.1.311.60.2.1.3=FR, SERIALNUMBER=423 734 177, OID.2.5.4.15=Private Organization\r\n";
+        assert!(is_trusted_signature(real));
+        assert!(is_trusted_signature("Valid|CN=Autre nom, SERIALNUMBER=423 734 177"));
+        assert!(!is_trusted_signature(&real.replacen("Valid", "NotTrusted", 1)));
         assert!(is_trusted_signature("Valid|CN=Vincent Burel, O=Vincent Burel, C=FR\r\n"));
         assert!(is_trusted_signature("\nValid|CN=VB-Audio Software"));
         assert!(!is_trusted_signature("NotSigned|"));
@@ -508,7 +522,7 @@ mod tests {
             Self {
                 download: Ok(String::new()),
                 files: Ok(names(PACK45)),
-                signature: Ok("Valid|CN=Vincent Burel".into()),
+                signature: Ok("Valid|CN=BUREL VINCENT Entrepreneur individuel, SERIALNUMBER=423 734 177".into()),
                 launch: Ok(String::new()),
                 calls: RefCell::default(),
             }
