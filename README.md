@@ -1,5 +1,8 @@
 # Micro Studio
 
+[![CI](https://github.com/Drien95/micro-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/Drien95/micro-studio/actions/workflows/ci.yml)
+[![Windows](https://github.com/Drien95/micro-studio/actions/workflows/windows.yml/badge.svg)](https://github.com/Drien95/micro-studio/actions/workflows/windows.yml)
+
 Logiciel Windows qui améliore la qualité de ton micro en temps réel, avec un
 **calibrage automatique** qui trouve les meilleurs réglages pour ton micro, ta
 pièce et ta voix. Le son traité est envoyé vers un micro virtuel que Discord,
@@ -49,6 +52,15 @@ Les réglages sont sauvegardés dans `%APPDATA%\micro-studio\settings.json` et r
 cargo run --release
 cargo test --release
 ```
+
+## Qualité
+
+Le code suit le format officiel Rust, passe clippy en mode strict sans
+avertissement et est testé sous Windows, Linux et macOS à chaque modification.
+Les normes appliquées (ISO/IEC 25010, règles NASA « Power of 10 », SemVer…) et
+ce qui reste à faire sont détaillés dans [docs/QUALITE.md](docs/QUALITE.md).
+Pour contribuer : [CONTRIBUTING.md](CONTRIBUTING.md). Historique des versions :
+[CHANGELOG.md](CHANGELOG.md).
 
 ## Feuille de route
 

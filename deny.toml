@@ -1,0 +1,41 @@
+# Politique des dépendances, vérifiée en CI par cargo-deny.
+# https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]
+
+[advisories]
+# Failles de sécurité connues (base RustSec) : bloquantes.
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+# Licences compatibles avec la licence MIT du projet (aucune licence « virale »
+# de type GPL n'est acceptée sans choix explicite).
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unlicense",
+    "0BSD",
+    "BlueOak-1.0.0",
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+    # Copyleft faible, limité aux fichiers de la dépendance : compatible.
+    "MPL-2.0",
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
