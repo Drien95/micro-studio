@@ -1,0 +1,28 @@
+[package]
+name = "micro-studio"
+version = "0.1.0"
+description = "Traitement du micro en temps réel avec calibrage automatique"
+license = "MIT"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+cpal = "0.18"
+dirs = "7.0.0"
+eframe = "0.37"
+nnnoiseless = "0.5"
+ringbuf = "0.4"
+rustfft = "6.4.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+
+# Le traitement audio doit rester rapide même en mode debug.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

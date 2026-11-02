@@ -1,0 +1,31 @@
+name: Windows
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Tests
+        run: cargo test --release
+      - name: Compilation
+        run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: micro-studio-windows
+          path: target/release/micro-studio.exe
+      - name: Publier la version
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/release/micro-studio.exe
