@@ -8,6 +8,12 @@ projet respecte le [versionnage sémantique](https://semver.org/lang/fr/)
 
 ## [Non publié]
 
+### Modifié
+- Moteur DeepFilterNet : convolutions sans test de bornes dans la boucle
+  interne et produits scalaires à 16 accumulateurs (environ 6 % plus rapide,
+  sortie toujours identique à l'officiel à 1e-7 près). Le produit scalaire
+  est partagé avec DNSMOS.
+
 ### Ajouté
 - Note de qualité perçue DNSMOS P.835 (Microsoft, ICASSP 2022) dans le
   calibrage : la voix, le bruit de fond et l'ensemble sont notés de 1 à 5

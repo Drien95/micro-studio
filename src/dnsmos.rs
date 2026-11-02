@@ -20,7 +20,7 @@
 //! répartissent sur tous les cœurs.
 
 use crate::dsp::dfn::LoadError;
-use crate::dsp::dfn::net::{Weights, take};
+use crate::dsp::dfn::net::{Weights, dot, take};
 use crate::dsp::dfn::onnx;
 
 /// Poids officiels embarqués dans l'exécutable.
@@ -317,19 +317,6 @@ impl Dnsmos {
     pub fn rate(&self, audio_48k: &[f32], max_clips: usize) -> Mos {
         self.rate_16k(&decimate_48k_to_16k(audio_48k), max_clips)
     }
-}
-
-#[inline]
-fn dot(a: &[f32], b: &[f32]) -> f32 {
-    let mut acc = [0f32; 8];
-    let (ca, ra) = a.as_chunks::<8>();
-    let (cb, rb) = b.as_chunks::<8>();
-    for (x, y) in ca.iter().zip(cb) {
-        for k in 0..8 {
-            acc[k] += x[k] * y[k];
-        }
-    }
-    acc.iter().sum::<f32>() + ra.iter().zip(rb).map(|(x, y)| x * y).sum::<f32>()
 }
 
 /// Longueur du filtre anti-repliement (impaire : retard entier).

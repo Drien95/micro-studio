@@ -35,17 +35,23 @@ fn sigmoid(x: f32) -> f32 {
 }
 
 #[inline]
-fn dot(a: &[f32], b: &[f32]) -> f32 {
-    // Quatre accumulateurs : le compilateur vectorise la boucle.
-    let mut acc = [0f32; 4];
-    let (ca, ra) = a.as_chunks::<4>();
-    let (cb, rb) = b.as_chunks::<4>();
+pub fn dot(a: &[f32], b: &[f32]) -> f32 {
+    // Seize accumulateurs indépendants : le compilateur en fait 4 registres
+    // vectoriels (8 avec AVX) et les additions ne s'attendent plus les unes
+    // les autres (latence de l'addition flottante masquée).
+    const LANES: usize = 16;
+    let mut acc = [0f32; LANES];
+    let (ca, ra) = a.as_chunks::<LANES>();
+    let (cb, rb) = b.as_chunks::<LANES>();
     for (x, y) in ca.iter().zip(cb) {
-        for k in 0..4 {
+        for k in 0..LANES {
             acc[k] += x[k] * y[k];
         }
     }
-    let mut s = (acc[0] + acc[1]) + (acc[2] + acc[3]);
+    let mut s = 0.0;
+    for half in acc.as_chunks::<4>().0 {
+        s += (half[0] + half[1]) + (half[2] + half[3]);
+    }
     for (x, y) in ra.iter().zip(rb) {
         s += x * y;
     }
@@ -115,11 +121,22 @@ impl Conv {
                     let input = &frame[ch * f_in..(ch + 1) * f_in];
                     let wk = &self.w[((o * self.in_per_group + c) * self.kt + i) * self.kf..][..self.kf];
                     for (j, &wj) in wk.iter().enumerate() {
-                        for (fo, r) in row.iter_mut().enumerate() {
-                            // fi = fo * stride - pad + j, hors bornes = zéro (remplissage).
-                            let fi = (fo * self.stride + j).wrapping_sub(self.pad);
-                            if fi < f_in {
-                                *r += wj * input[fi];
+                        // fi = fo * stride + j - pad ; hors de 0..f_in, l'entrée
+                        // vaut zéro (remplissage) : on restreint fo d'avance,
+                        // ce qui laisse une boucle sans test, vectorisable.
+                        let lo = self.pad.saturating_sub(j).div_ceil(self.stride);
+                        let hi = (f_in + self.pad).saturating_sub(j).div_ceil(self.stride).min(f_out);
+                        if lo >= hi {
+                            continue;
+                        }
+                        let first = lo * self.stride + j - self.pad;
+                        if self.stride == 1 {
+                            for (r, &v) in row[lo..hi].iter_mut().zip(&input[first..]) {
+                                *r += wj * v;
+                            }
+                        } else {
+                            for (r, &v) in row[lo..hi].iter_mut().zip(input[first..].iter().step_by(self.stride)) {
+                                *r += wj * v;
                             }
                         }
                     }
