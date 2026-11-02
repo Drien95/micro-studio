@@ -1,12 +1,13 @@
 //! Interface graphique (egui).
 
 use crate::calibrate::{self, CalibrationResult};
-use crate::engine::{self, DeviceLists, Engine, Shared, INTERNAL_RATE};
-use crate::params::{builtin_presets, EqKind, Params};
+use crate::engine::{self, AudioBackend, CpalBackend, DeviceLists, Engine, INTERNAL_RATE, Shared};
+use crate::params::{EqKind, Params, builtin_presets};
 use crate::settings::Settings;
 use eframe::egui::{self, Color32, RichText};
-use std::sync::mpsc::{channel, Receiver};
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
 enum Calib {
@@ -24,7 +25,11 @@ enum CalibMsg {
     Done(Box<CalibrationResult>),
 }
 
+/// Application egui : fenêtre principale et assistant de calibrage.
 pub struct App {
+    backend: Box<dyn AudioBackend>,
+    /// `None` : ne rien écrire sur le disque (tests).
+    settings_path: Option<PathBuf>,
     settings: Settings,
     shared: Arc<Shared>,
     engine: Option<Engine>,
@@ -36,12 +41,26 @@ pub struct App {
     last_save: Option<Instant>,
 }
 
+impl std::fmt::Debug for App {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("App").field("engine", &self.engine).field("error", &self.error).finish_non_exhaustive()
+    }
+}
+
 impl App {
+    /// L'application réelle : carte son via cpal, réglages dans `%APPDATA%`.
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        let settings = Settings::load();
+        Self::with_backend(Settings::load(), Box::new(CpalBackend), crate::settings::default_path())
+    }
+
+    /// Construit l'application avec un backend audio et un emplacement de
+    /// sauvegarde au choix (les tests passent un faux backend et `None`).
+    pub fn with_backend(settings: Settings, backend: Box<dyn AudioBackend>, settings_path: Option<PathBuf>) -> Self {
         let shared = Shared::new(settings.params.clone());
         let mut app = Self {
-            devices: engine::list_devices(),
+            devices: backend.list_devices(),
+            backend,
+            settings_path,
             settings,
             shared,
             engine: None,
@@ -61,12 +80,8 @@ impl App {
 
     fn start_engine(&mut self) {
         self.engine = None;
-        let out = self
-            .settings
-            .output_device
-            .clone()
-            .or_else(|| engine::find_virtual_cable(&self.devices.outputs));
-        match engine::start(self.shared.clone(), self.settings.input_device.as_deref(), out.as_deref()) {
+        let out = self.settings.output_device.clone().or_else(|| engine::find_virtual_cable(&self.devices.outputs));
+        match self.backend.start(&self.shared, self.settings.input_device.as_deref(), out.as_deref()) {
             Ok(e) => {
                 self.settings.input_device = Some(e.input_name.clone());
                 self.settings.output_device = Some(e.output_name.clone());
@@ -89,14 +104,14 @@ impl App {
             ui.separator();
             match &self.engine {
                 Some(e) => {
-                    ui.label(RichText::new("● Actif").color(Color32::from_rgb(60, 180, 90)));
-                    ui.label(format!("{} → {}", e.input_name, e.output_name)).on_hover_text(format!(
+                    ui.label(RichText::new("• Actif").color(Color32::from_rgb(60, 180, 90)));
+                    ui.label(format!("{} vers {}", e.input_name, e.output_name)).on_hover_text(format!(
                         "Micro à {} Hz, sortie à {} Hz, traitement interne à {} Hz",
                         e.input_rate, e.output_rate, INTERNAL_RATE
                     ));
                 }
                 None => {
-                    ui.label(RichText::new("● Arrêté").color(Color32::from_rgb(200, 80, 60)));
+                    ui.label(RichText::new("• Arrêté").color(Color32::from_rgb(200, 80, 60)));
                 }
             }
         });
@@ -131,8 +146,8 @@ impl App {
                 restart = true;
             }
 
-            if ui.button("⟳").on_hover_text("Rafraîchir la liste des périphériques").clicked() {
-                self.devices = engine::list_devices();
+            if ui.button("Rafraîchir").on_hover_text("Rafraîchir la liste des périphériques").clicked() {
+                self.devices = self.backend.list_devices();
             }
             if self.engine.is_some() {
                 if ui.button("Arrêter").clicked() {
@@ -149,7 +164,10 @@ impl App {
 
         if engine::find_virtual_cable(&self.devices.outputs).is_none() {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("VB-Cable n'est pas installé : c'est lui qui crée le micro virtuel.").color(Color32::from_rgb(220, 160, 40)));
+                ui.label(
+                    RichText::new("VB-Cable n'est pas installé : c'est lui qui crée le micro virtuel.")
+                        .color(Color32::from_rgb(220, 160, 40)),
+                );
                 ui.hyperlink_to("Télécharger VB-Cable (gratuit)", "https://vb-audio.com/Cable/");
             });
         }
@@ -172,7 +190,11 @@ impl App {
             ui.label("Activité");
             ui.horizontal(|ui| {
                 let open = m.gate_open.load(std::sync::atomic::Ordering::Relaxed);
-                ui.label(if open { RichText::new("Porte ouverte").color(Color32::from_rgb(60, 180, 90)) } else { RichText::new("Porte fermée").weak() });
+                ui.label(if open {
+                    RichText::new("Porte ouverte").color(Color32::from_rgb(60, 180, 90))
+                } else {
+                    RichText::new("Porte fermée").weak()
+                });
                 ui.separator();
                 ui.label(format!("Voix détectée : {:.0} %", m.vad.load() * 100.0));
                 ui.separator();
@@ -188,8 +210,10 @@ impl App {
         ui.horizontal(|ui| {
             let enabled = self.engine.is_some() && matches!(self.calib, Calib::Idle);
             if ui
-                .add_enabled(enabled, egui::Button::new(RichText::new("🎯 Calibrage automatique").strong()))
-                .on_hover_text("Mesure ton micro, ta pièce et ta voix, puis trouve les meilleurs réglages (environ 1 minute)")
+                .add_enabled(enabled, egui::Button::new(RichText::new("Calibrage automatique").strong()))
+                .on_hover_text(
+                    "Mesure ton micro, ta pièce et ta voix, puis trouve les meilleurs réglages (environ 1 minute)",
+                )
                 .clicked()
             {
                 self.calib = Calib::Intro;
@@ -203,16 +227,15 @@ impl App {
             }
 
             ui.separator();
-            ui.label("Préréglage :");
             let mut chosen: Option<Params> = None;
-            egui::ComboBox::from_id_salt("presets").selected_text("Choisir…").show_ui(ui, |ui| {
+            egui::ComboBox::from_label("Préréglage").selected_text("Choisir…").show_ui(ui, |ui| {
                 for (name, p) in builtin_presets() {
                     if ui.selectable_label(false, name).clicked() {
                         chosen = Some(p);
                     }
                 }
                 for (name, p) in &self.settings.user_presets {
-                    if ui.selectable_label(false, format!("★ {name}")).clicked() {
+                    if ui.selectable_label(false, format!("Perso : {name}")).clicked() {
                         chosen = Some(p.clone());
                     }
                 }
@@ -240,7 +263,10 @@ impl App {
         });
 
         section(ui, "Filtre passe-haut", Some(&mut p.hpf_enabled), |ui| {
-            ui.label(RichText::new("Coupe les graves inutiles : vibrations du bureau, souffle, « boum » des p et des b.").weak());
+            ui.label(
+                RichText::new("Coupe les graves inutiles : vibrations du bureau, souffle, « boum » des p et des b.")
+                    .weak(),
+            );
             ui.add(egui::Slider::new(&mut p.hpf_hz, 40.0..=200.0).text("Fréquence").suffix(" Hz").logarithmic(true));
         });
 
@@ -260,7 +286,12 @@ impl App {
 
         section(ui, "De-esser", Some(&mut p.deesser_enabled), |ui| {
             ui.label(RichText::new("Adoucit les « s » et « ch » trop sifflants.").weak());
-            ui.add(egui::Slider::new(&mut p.deesser_freq_hz, 3000.0..=10000.0).text("Fréquence").suffix(" Hz").logarithmic(true));
+            ui.add(
+                egui::Slider::new(&mut p.deesser_freq_hz, 3000.0..=10000.0)
+                    .text("Fréquence")
+                    .suffix(" Hz")
+                    .logarithmic(true),
+            );
             ui.add(egui::Slider::new(&mut p.deesser_threshold_db, -60.0..=0.0).text("Seuil").suffix(" dB"));
             ui.add(egui::Slider::new(&mut p.deesser_max_reduction_db, 0.0..=12.0).text("Réduction max").suffix(" dB"));
         });
@@ -271,8 +302,10 @@ impl App {
             for (b, name) in p.eq_bands.iter_mut().zip(names) {
                 ui.horizontal(|ui| {
                     ui.label(format!("{name:<9}"));
-                    ui.add(egui::Slider::new(&mut b.gain_db, -12.0..=12.0).suffix(" dB"));
-                    ui.add(egui::Slider::new(&mut b.freq_hz, 60.0..=16000.0).suffix(" Hz").logarithmic(true));
+                    ui.add(egui::Slider::new(&mut b.gain_db, -12.0..=12.0).text("Gain").suffix(" dB"));
+                    ui.add(
+                        egui::Slider::new(&mut b.freq_hz, 60.0..=16000.0).text("Fréq.").suffix(" Hz").logarithmic(true),
+                    );
                     if b.kind == EqKind::Peak {
                         ui.add(egui::Slider::new(&mut b.q, 0.3..=4.0).text("Q"));
                     }
@@ -284,8 +317,15 @@ impl App {
             ui.label(RichText::new("Rend le volume régulier : les passages faibles et forts se rapprochent.").weak());
             ui.add(egui::Slider::new(&mut p.comp_threshold_db, -50.0..=0.0).text("Seuil").suffix(" dB"));
             ui.add(egui::Slider::new(&mut p.comp_ratio, 1.0..=20.0).text("Ratio").suffix(":1").logarithmic(true));
-            ui.add(egui::Slider::new(&mut p.comp_attack_ms, 0.1..=100.0).text("Attaque").suffix(" ms").logarithmic(true));
-            ui.add(egui::Slider::new(&mut p.comp_release_ms, 10.0..=1000.0).text("Relâchement").suffix(" ms").logarithmic(true));
+            ui.add(
+                egui::Slider::new(&mut p.comp_attack_ms, 0.1..=100.0).text("Attaque").suffix(" ms").logarithmic(true),
+            );
+            ui.add(
+                egui::Slider::new(&mut p.comp_release_ms, 10.0..=1000.0)
+                    .text("Relâchement")
+                    .suffix(" ms")
+                    .logarithmic(true),
+            );
             ui.add(egui::Slider::new(&mut p.comp_knee_db, 0.0..=12.0).text("Genou").suffix(" dB"));
             ui.add(egui::Slider::new(&mut p.comp_makeup_db, 0.0..=24.0).text("Gain de rattrapage").suffix(" dB"));
         });
@@ -300,6 +340,7 @@ impl App {
         }
     }
 
+    #[expect(clippy::too_many_lines, reason = "machine à états de l'assistant, à découper avec la refonte de l'UI")]
     fn calibration_window(&mut self, ctx: &egui::Context) {
         if matches!(self.calib, Calib::Idle) {
             return;
@@ -332,7 +373,7 @@ impl App {
                 }
                 Calib::Silence(start) => {
                     let t = start.elapsed().as_secs_f32();
-                    ui.heading("Silence, s'il te plaît 🤫");
+                    ui.heading("Silence, s'il te plaît");
                     ui.label("Ne parle pas et ne touche pas au clavier.");
                     ui.add(egui::ProgressBar::new(t / calibrate::SILENCE_SECS).show_percentage());
                     if t >= calibrate::SILENCE_SECS {
@@ -341,21 +382,14 @@ impl App {
                 }
                 Calib::Speech(start) => {
                     let t = start.elapsed().as_secs_f32();
-                    ui.heading("Lis ce texte à voix haute 🎙️");
+                    ui.heading("Lis ce texte à voix haute");
                     ui.add_space(4.0);
                     ui.label(RichText::new(calibrate::READING_TEXT).size(16.0));
                     ui.add_space(8.0);
-                    ui.add(egui::ProgressBar::new(t / calibrate::SPEECH_SECS).text(format!("{:.0} s", t)));
+                    ui.add(egui::ProgressBar::new(t / calibrate::SPEECH_SECS).text(format!("{t:.0} s")));
                     let done = t >= calibrate::SPEECH_SECS || (t > 15.0 && ui.button("J'ai fini de lire").clicked());
                     if done {
-                        let all = self.shared.stop_recording();
-                        let split = ((calibrate::SILENCE_SECS - 0.5) * INTERNAL_RATE as f32) as usize;
-                        let split = split.min(all.len());
-                        // On jette la première demi-seconde (clic de la souris) et la transition.
-                        let skip = (INTERNAL_RATE / 2) as usize;
-                        let silence = all[skip.min(split)..split].to_vec();
-                        let speech_start = ((calibrate::SILENCE_SECS * INTERNAL_RATE as f32) as usize).min(all.len());
-                        let speech = all[speech_start..].to_vec();
+                        let (silence, speech) = calibrate::split_recording(&self.shared.stop_recording());
                         let (tx, rx) = channel();
                         std::thread::spawn(move || {
                             let tx2 = tx.clone();
@@ -373,10 +407,8 @@ impl App {
                         match msg {
                             CalibMsg::Progress(p) => *progress = p,
                             CalibMsg::Done(r) => {
-                                if r.analysis.snr_db < 6.0 {
-                                    next = Some(Calib::Failed(
-                                        "Je n'ai presque pas entendu ta voix. Vérifie que le bon micro est choisi et que tu as bien lu le texte.".into(),
-                                    ));
+                                if let Err(msg) = calibrate::check(&r) {
+                                    next = Some(Calib::Failed(msg.into()));
                                 } else {
                                     let previous = self.settings.params.clone();
                                     apply = Some(r.params.clone());
@@ -389,10 +421,10 @@ impl App {
                 }
                 Calib::Done { result, previous, listening_new } => {
                     let a = &result.analysis;
-                    ui.heading("Calibrage terminé ✅");
+                    ui.heading("Calibrage terminé");
                     ui.label(format!("Bruit de fond : {:.0} dBFS · Voix : {:.0} dBFS · Écart voix/bruit : {:.0} dB", a.noise_floor_db, a.speech_level_db, a.snr_db));
                     ui.label(format!("Sifflantes autour de {:.1} kHz · Variations de volume : {:.0} dB", a.sibilance_freq_hz / 1000.0, a.dynamic_range_db));
-                    if a.clipped_ratio > 0.0005 {
+                    if a.clipped() {
                         ui.label(RichText::new("Ton micro a saturé pendant la lecture : baisse son volume dans Windows (Paramètres > Son) puis relance le calibrage.").color(Color32::from_rgb(220, 160, 40)));
                     }
                     ui.add_space(6.0);
@@ -460,32 +492,49 @@ fn meter_row(ui: &mut egui::Ui, label: &str, db: f32) {
     } else {
         Color32::from_rgb(60, 180, 90)
     };
-    ui.add(
-        egui::ProgressBar::new(frac)
-            .fill(color)
-            .desired_width(420.0)
-            .text(if db < -59.0 { "—".to_string() } else { format!("{db:.0} dB") }),
-    );
+    ui.add(egui::ProgressBar::new(frac).fill(color).desired_width(420.0).text(if db < -59.0 {
+        "—".to_string()
+    } else {
+        format!("{db:.0} dB")
+    }));
 }
 
 fn section(ui: &mut egui::Ui, title: &str, enabled: Option<&mut bool>, body: impl FnOnce(&mut egui::Ui)) {
     ui.group(|ui| {
-        let on = match enabled {
-            Some(e) => {
-                ui.checkbox(e, RichText::new(title).strong());
-                *e
-            }
-            None => {
-                ui.label(RichText::new(title).strong());
-                true
-            }
+        let on = if let Some(e) = enabled {
+            ui.checkbox(e, RichText::new(title).strong());
+            *e
+        } else {
+            ui.label(RichText::new(title).strong());
+            true
         };
         ui.add_enabled_ui(on, body);
     });
 }
 
-impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+impl App {
+    /// Réglages courants.
+    pub fn settings(&self) -> &Settings {
+        &self.settings
+    }
+
+    /// Vrai si le moteur audio tourne.
+    pub fn is_running(&self) -> bool {
+        self.engine.is_some()
+    }
+
+    /// Dernier message d'erreur affiché.
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    /// Vrai si l'assistant de calibrage est ouvert.
+    pub fn calibration_open(&self) -> bool {
+        !matches!(self.calib, Calib::Idle)
+    }
+
+    /// Dessine toute l'interface (appelé à chaque image).
+    pub fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         egui::Panel::top("top").show(ui, |ui| {
             ui.add_space(6.0);
@@ -503,12 +552,22 @@ impl eframe::App for App {
         });
         self.calibration_window(&ctx);
 
-        if let Some(t) = self.last_save {
-            if t.elapsed() > Duration::from_millis(800) {
-                self.settings.save();
-                self.last_save = None;
+        if let Some(t) = self.last_save
+            && t.elapsed() > Duration::from_millis(800)
+        {
+            if let Some(path) = &self.settings_path
+                && let Err(e) = self.settings.save_to(path)
+            {
+                self.error = Some(format!("Impossible d'enregistrer les réglages : {e}"));
             }
+            self.last_save = None;
         }
         ctx.request_repaint_after(Duration::from_millis(33));
+    }
+}
+
+impl eframe::App for App {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.show(ui);
     }
 }

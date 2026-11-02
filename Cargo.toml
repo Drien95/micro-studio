@@ -4,6 +4,19 @@ version = "0.1.0"
 description = "Traitement du micro en temps réel avec calibrage automatique"
 license = "MIT"
 edition = "2024"
+rust-version = "1.95"
+repository = "https://github.com/Drien95/micro-studio"
+readme = "README.md"
+keywords = ["audio", "microphone", "noise-suppression", "dsp", "realtime"]
+categories = ["multimedia::audio"]
+
+[lib]
+name = "micro_studio"
+path = "src/lib.rs"
+
+[[bin]]
+name = "micro-studio"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.104"
@@ -15,6 +28,40 @@ ringbuf = "0.4"
 rustfft = "6.4.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+
+[dev-dependencies]
+egui_kittest = "0.37"
+proptest = "1.12"
+
+# Règles d'analyse statique, appliquées par `cargo clippy` en local et en CI.
+# Voir docs/QUALITE.md pour la justification de chaque exception.
+[lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Plantages explicites interdits hors tests (NASA Power of 10, règle 7).
+unwrap_used = "warn"
+panic = "warn"
+dbg_macro = "warn"
+todo = "warn"
+# Code DSP : conversions numériques volontaires (échantillons f32, index usize,
+# fréquences u32). Les valeurs restent très loin des limites de précision.
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+# Nommage court standard en traitement du signal (a1/a2, b0/b1, x/y...).
+similar_names = "allow"
+many_single_char_names = "allow"
+# Les drapeaux « activé/désactivé » de chaque effet sont des bool par nature.
+struct_excessive_bools = "allow"
+# Documentation des erreurs/paniques : appliquée progressivement.
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+module_name_repetitions = "allow"
 
 # Le traitement audio doit rester rapide même en mode debug.
 [profile.dev]

@@ -3,12 +3,10 @@
 //! propose des réglages, puis organise un tournoi entre variantes pour garder
 //! celle qui obtient le meilleur score.
 
-#[cfg(test)]
-use crate::dsp::util::db_to_lin;
-use crate::dsp::util::{lin_to_db, SAMPLE_RATE};
+use crate::dsp::util::{SAMPLE_RATE, db_to_lin, lin_to_db};
 use crate::dsp::{Chain, FRAME};
 use crate::params::Params;
-use rustfft::{num_complex::Complex, FftPlanner};
+use rustfft::{FftPlanner, num_complex::Complex};
 
 pub const SILENCE_SECS: f32 = 8.0;
 pub const SPEECH_SECS: f32 = 40.0;
@@ -72,7 +70,7 @@ fn percentile(v: &[f32], p: f32) -> f32 {
         return -120.0;
     }
     let mut s = v.to_vec();
-    s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    s.sort_by(f32::total_cmp);
     let idx = ((s.len() - 1) as f32 * p.clamp(0.0, 1.0)).round() as usize;
     s[idx]
 }
@@ -82,9 +80,8 @@ fn average_spectrum(x: &[f32], keep: impl Fn(usize) -> bool) -> Vec<f32> {
     const N: usize = 2048;
     let mut planner = FftPlanner::<f32>::new();
     let fft = planner.plan_fft_forward(N);
-    let window: Vec<f32> = (0..N)
-        .map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / N as f32).cos())
-        .collect();
+    let window: Vec<f32> =
+        (0..N).map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / N as f32).cos()).collect();
     let mut acc = vec![0f32; N / 2];
     let mut count = 0;
     let mut start = 0;
@@ -103,7 +100,7 @@ fn average_spectrum(x: &[f32], keep: impl Fn(usize) -> bool) -> Vec<f32> {
         start += N / 2;
     }
     if count > 0 {
-        for a in acc.iter_mut() {
+        for a in &mut acc {
             *a /= count as f32;
         }
     }
@@ -158,12 +155,8 @@ pub fn analyze(silence: &[f32], speech: &[f32]) -> Analysis {
     let sib_freq = peak_freq(&sp_spec, 4500.0, 9000.0).clamp(4500.0, 9000.0);
     bp.set_bandpass(sib_freq, 1.4);
     let filtered: Vec<f32> = speech.iter().map(|&s| bp.process(s)).collect();
-    let sib_levels: Vec<f32> = frame_rms_db(&filtered)
-        .into_iter()
-        .zip(&active)
-        .filter(|(_, a)| **a)
-        .map(|(l, _)| l)
-        .collect();
+    let sib_levels: Vec<f32> =
+        frame_rms_db(&filtered).into_iter().zip(&active).filter(|(_, a)| **a).map(|(l, _)| l).collect();
 
     Analysis {
         noise_floor_db: noise_floor,
@@ -176,6 +169,39 @@ pub fn analyze(silence: &[f32], speech: &[f32]) -> Analysis {
         sibilance_freq_hz: sib_freq,
         sibilance_p90_db: percentile(&sib_levels, 0.9),
         clipped_ratio: clipped,
+    }
+}
+
+/// Écart voix/bruit minimal (dB) pour considérer que la voix a été entendue.
+pub const MIN_SNR_DB: f32 = 6.0;
+/// Proportion d'échantillons saturés au-delà de laquelle on prévient l'utilisateur.
+pub const CLIPPING_WARNING_RATIO: f32 = 0.0005;
+
+impl Analysis {
+    /// Vrai si le micro a saturé pendant la lecture.
+    pub fn clipped(&self) -> bool {
+        self.clipped_ratio > CLIPPING_WARNING_RATIO
+    }
+}
+
+/// Sépare l'enregistrement continu de l'assistant (48 kHz) en `(silence, voix)`.
+///
+/// La première demi-seconde (clic de souris) et la dernière demi-seconde de la
+/// phase silencieuse (transition) sont ignorées.
+pub fn split_recording(all: &[f32]) -> (Vec<f32>, Vec<f32>) {
+    let rate = SAMPLE_RATE;
+    let split = (((SILENCE_SECS - 0.5) * rate) as usize).min(all.len());
+    let skip = ((0.5 * rate) as usize).min(split);
+    let speech_start = ((SILENCE_SECS * rate) as usize).min(all.len());
+    (all[skip..split].to_vec(), all[speech_start..].to_vec())
+}
+
+/// Vérifie qu'un calibrage est exploitable ; sinon, le message à afficher.
+pub fn check(result: &CalibrationResult) -> Result<(), &'static str> {
+    if result.analysis.snr_db < MIN_SNR_DB {
+        Err("Je n'ai presque pas entendu ta voix. Vérifie que le bon micro est choisi et que tu as bien lu le texte.")
+    } else {
+        Ok(())
     }
 }
 
@@ -275,6 +301,8 @@ pub fn score(output: &[f32], speech_mask: &[bool]) -> Score {
     }
 }
 
+/// Résultat complet d'un calibrage.
+#[derive(Clone, Debug)]
 pub struct CalibrationResult {
     pub analysis: Analysis,
     pub params: Params,
@@ -307,7 +335,7 @@ pub fn run(silence: &[f32], speech: &[f32], mut progress: impl FnMut(f32)) -> Ca
                     let mut p = base.clone();
                     p.gate_threshold_db += gate_off;
                     p.comp_ratio = (p.comp_ratio * ratio_mul).max(1.5);
-                    for b in p.eq_bands.iter_mut() {
+                    for b in &mut p.eq_bands {
                         b.gain_db *= eq_scale;
                     }
                     p.denoise_mix = mix;
@@ -320,7 +348,7 @@ pub fn run(silence: &[f32], speech: &[f32], mut progress: impl FnMut(f32)) -> Ca
     // Le tournoi est réparti sur tous les cœurs du processeur.
     let total = candidates.len();
     let done = std::sync::atomic::AtomicUsize::new(0);
-    let workers = std::thread::available_parallelism().map_or(2, |n| n.get()).min(total);
+    let workers = std::thread::available_parallelism().map_or(2, std::num::NonZero::get).min(total);
     let per = total.div_ceil(workers);
     let mut results: Vec<(Params, Score)> = Vec::with_capacity(total);
     std::thread::scope(|scope| {
@@ -349,7 +377,7 @@ pub fn run(silence: &[f32], speech: &[f32], mut progress: impl FnMut(f32)) -> Ca
         }
     });
     progress(1.0);
-    let best = results.into_iter().max_by(|a, b| a.1.total.partial_cmp(&b.1.total).unwrap());
+    let best = results.into_iter().max_by(|a, b| a.1.total.total_cmp(&b.1.total));
     let (params, score) = best.expect("au moins un candidat");
     CalibrationResult { analysis, params, score, baseline_score, candidates_tested: total }
 }
@@ -365,12 +393,15 @@ fn evaluate(mut p: Params, full: &[f32], mask: &[bool]) -> (Params, Score) {
 }
 
 /// Signal de test synthétique (voix simulée + bruit), utilisé par les tests.
-#[cfg(test)]
+///
+/// Renvoie `(silence, voix)` : un quart de la durée de bruit seul, puis `secs`
+/// secondes de syllabes harmoniques (200 ms de son, 100 ms de pause) sur ce bruit.
+/// Déterministe (générateur congruentiel à graine fixe).
 pub fn synthetic_voice(secs: f32, noise_db: f32, voice_db: f32) -> (Vec<f32>, Vec<f32>) {
     let n = (secs * SAMPLE_RATE) as usize;
     let mut seed = 12345u32;
     let mut noise = || {
-        seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         (seed as f32 / u32::MAX as f32) * 2.0 - 1.0
     };
     let nl = db_to_lin(noise_db) * 1.7;
@@ -392,6 +423,124 @@ pub fn synthetic_voice(secs: f32, noise_db: f32, voice_db: f32) -> (Vec<f32>, Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tone(freq: f32, amp: f32, n: usize) -> Vec<f32> {
+        (0..n).map(|i| amp * (2.0 * std::f32::consts::PI * freq * i as f32 / SAMPLE_RATE).sin()).collect()
+    }
+
+    #[test]
+    fn percentile_handles_edges() {
+        assert!((percentile(&[], 0.5) + 120.0).abs() < f32::EPSILON);
+        let v = [5.0, 1.0, 3.0, 2.0, 4.0];
+        assert!((percentile(&v, 0.0) - 1.0).abs() < f32::EPSILON);
+        assert!((percentile(&v, 0.5) - 3.0).abs() < f32::EPSILON);
+        assert!((percentile(&v, 1.0) - 5.0).abs() < f32::EPSILON);
+        assert!((percentile(&v, 7.0) - 5.0).abs() < f32::EPSILON, "p borné à [0, 1]");
+        // Régression : un NaN faisait paniquer le tri (`partial_cmp().unwrap()`).
+        let _ = percentile(&[1.0, f32::NAN, 2.0], 0.5);
+    }
+
+    #[test]
+    fn frame_rms_ignores_incomplete_frames() {
+        let x = vec![0.5f32; FRAME * 2 + 10];
+        let l = frame_rms_db(&x);
+        assert_eq!(l.len(), 2);
+        assert!(l.iter().all(|db| (db + 6.02).abs() < 0.01));
+    }
+
+    #[test]
+    fn spectrum_finds_the_tone() {
+        let x = tone(3000.0, 0.5, 48_000);
+        let spec = average_spectrum(&x, |_| true);
+        assert_eq!(spec.len(), 1024);
+        assert!((peak_freq(&spec, 1000.0, 8000.0) - 3000.0).abs() < 30.0);
+        assert!(band_db(&spec, 2500.0, 3500.0) > band_db(&spec, 500.0, 1500.0) + 40.0);
+        let none = average_spectrum(&x, |_| false);
+        assert!(none.iter().all(|&e| e == 0.0), "aucune trame retenue : spectre nul");
+    }
+
+    #[test]
+    fn split_recording_drops_click_and_transition() {
+        let rate = SAMPLE_RATE as usize;
+        let all: Vec<f32> = (0..rate * 20).map(|i| i as f32).collect();
+        let (sil, sp) = split_recording(&all);
+        assert_eq!(sil.len(), (SILENCE_SECS as usize - 1) * rate);
+        assert!((sil[0] - (rate / 2) as f32).abs() < f32::EPSILON);
+        assert!((sp[0] - (SILENCE_SECS as usize * rate) as f32).abs() < f32::EPSILON);
+        assert_eq!(sp.len(), all.len() - SILENCE_SECS as usize * rate);
+        // Enregistrement trop court (bouton cliqué trop tôt) : pas de panique.
+        for n in [0, 10, rate, rate * 8] {
+            let (a, b) = split_recording(&all[..n]);
+            assert!(a.len() + b.len() <= n);
+        }
+    }
+
+    #[test]
+    fn check_rejects_inaudible_voice() {
+        let (sil, sp) = synthetic_voice(3.0, -60.0, -30.0);
+        let mut r = run(&sil, &sp, |_| {});
+        assert!(check(&r).is_ok());
+        r.analysis.snr_db = MIN_SNR_DB - 1.0;
+        assert!(check(&r).is_err());
+    }
+
+    #[test]
+    fn clipping_is_detected() {
+        let (sil, _) = synthetic_voice(2.0, -60.0, -30.0);
+        let a = analyze(&sil, &tone(200.0, 1.5, 48_000).iter().map(|x| x.clamp(-1.0, 1.0)).collect::<Vec<_>>());
+        assert!(a.clipped());
+        let b = analyze(&sil, &tone(200.0, 0.3, 48_000));
+        assert!(!b.clipped());
+    }
+
+    #[test]
+    fn propose_raises_highpass_for_rumbling_rooms() {
+        let quiet = Analysis { low_noise_excess_db: 2.0, ..Analysis::default() };
+        let rumble = Analysis { low_noise_excess_db: 15.0, ..Analysis::default() };
+        assert!((propose(&quiet).hpf_hz - 90.0).abs() < f32::EPSILON);
+        assert!((propose(&rumble).hpf_hz - 120.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn propose_scales_compression_with_dynamics() {
+        let ratio = |d| propose(&Analysis { dynamic_range_db: d, ..Analysis::default() }).comp_ratio;
+        assert!(ratio(5.0) < ratio(10.0) && ratio(10.0) < ratio(20.0));
+    }
+
+    #[test]
+    fn propose_keeps_values_in_safe_ranges() {
+        for (noise, speech) in [(-90.0, -60.0), (-60.0, -20.0), (-30.0, -3.0), (-10.0, -5.0)] {
+            let a = Analysis {
+                noise_floor_db: noise,
+                speech_level_db: speech,
+                speech_peak_db: speech + 12.0,
+                snr_db: speech - noise,
+                ..Analysis::default()
+            };
+            let p = propose(&a);
+            assert!((-12.0..=30.0).contains(&p.input_gain_db));
+            assert!((-70.0..=-20.0).contains(&p.gate_threshold_db));
+            assert!((0.0..=12.0).contains(&p.comp_makeup_db));
+            assert!(p.eq_bands.iter().all(|b| b.gain_db.abs() <= 6.0));
+        }
+    }
+
+    #[test]
+    fn score_prefers_clean_and_steady_output() {
+        let mask: Vec<bool> = (0..200).map(|i| i % 3 != 0).collect();
+        let render = |noise: f32, voice: f32| -> Vec<f32> {
+            mask.iter()
+                .flat_map(|&m| {
+                    let amp = if m { voice } else { noise };
+                    tone(1000.0, amp, FRAME)
+                })
+                .collect()
+        };
+        let clean = score(&render(0.0001, 0.18), &mask);
+        let noisy = score(&render(0.05, 0.18), &mask);
+        assert!(clean.noise_reduction_db > noisy.noise_reduction_db);
+        assert!(clean.total > noisy.total);
+    }
 
     #[test]
     fn calibration_on_synthetic_voice_is_sane() {

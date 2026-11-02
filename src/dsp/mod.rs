@@ -26,6 +26,8 @@ pub struct FrameStats {
     pub vad: f32,
 }
 
+/// Chaîne d'effets complète ; un état par flux audio.
+#[derive(Debug)]
 pub struct Chain {
     params: Params,
     hpf: [Biquad; 2],
@@ -67,7 +69,14 @@ impl Chain {
                 EqKind::HighShelf => f.set_high_shelf(b.freq_hz, b.q, b.gain_db),
             }
         }
-        self.comp.configure(p.comp_threshold_db, p.comp_ratio, p.comp_attack_ms, p.comp_release_ms, p.comp_knee_db, p.comp_makeup_db);
+        self.comp.configure(
+            p.comp_threshold_db,
+            p.comp_ratio,
+            p.comp_attack_ms,
+            p.comp_release_ms,
+            p.comp_knee_db,
+            p.comp_makeup_db,
+        );
         self.limiter.configure(p.limiter_ceiling_db);
     }
 
@@ -80,6 +89,12 @@ impl Chain {
 
         let mut in_peak = 0f32;
         for x in frame.iter_mut() {
+            // Un pilote défaillant peut livrer NaN ou ±inf : on les remplace par du
+            // silence, sinon ils resteraient piégés dans l'état des filtres (et
+            // RNNoise panique sur une entrée non finie).
+            if !x.is_finite() {
+                *x = 0.0;
+            }
             *x *= in_gain;
             in_peak = in_peak.max(x.abs());
         }
@@ -122,7 +137,7 @@ impl Chain {
                 max_dgr = max_dgr.min(self.deesser.gain_reduction_db());
             }
             if p.eq_enabled {
-                for f in self.eq.iter_mut() {
+                for f in &mut self.eq {
                     s = f.process(s);
                 }
             }
@@ -248,8 +263,22 @@ mod tests {
         });
         let x = sine(440.0, 0.3, 1.0);
         let out = Chain::render(&p, &x).0;
-        let wet = Chain::render(&only(|p| { p.denoise_enabled = true; p.denoise_mix = 1.0; }), &x).0;
-        let dry = Chain::render(&only(|p| { p.denoise_enabled = true; p.denoise_mix = 0.0; }), &x).0;
+        let wet = Chain::render(
+            &only(|p| {
+                p.denoise_enabled = true;
+                p.denoise_mix = 1.0;
+            }),
+            &x,
+        )
+        .0;
+        let dry = Chain::render(
+            &only(|p| {
+                p.denoise_enabled = true;
+                p.denoise_mix = 0.0;
+            }),
+            &x,
+        )
+        .0;
         let mut corr = 0f32;
         let (mut ew, mut ed) = (0f32, 0f32);
         for i in 24000..48000 {
@@ -269,6 +298,6 @@ mod tests {
         for _ in 0..44_100 {
             r.push(0.1, |_| n += 1);
         }
-        assert!((n as i32 - 48_000).abs() <= 2, "{n}");
+        assert!((n - 48_000_i32).abs() <= 2, "{n}");
     }
 }
