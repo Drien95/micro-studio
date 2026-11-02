@@ -24,12 +24,11 @@ jobs:
       - name: Couverture (100 % des lignes exigé)
         run: make -C driver/tests coverage CC=gcc
 
-  build:
-    name: Compilation du pilote (WDK, x64)
+  core-tests-msvc:
+    name: Tests du cœur (MSVC /W4 /WX) et scripts PowerShell
     runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@v4
-      - uses: microsoft/setup-msbuild@v2
       - uses: ilammy/msvc-dev-cmd@v1
       - name: Tests du cœur avec MSVC (/W4 /WX)
         shell: cmd
@@ -44,6 +43,15 @@ jobs:
             [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errors) | Out-Null
             if ($errors) { $errors; exit 1 }
           }
+
+  # Job séparé : l'environnement de msvc-dev-cmd masquerait les outils du WDK
+  # NuGet (stampinf.exe introuvable).
+  build:
+    name: Compilation du pilote (WDK, x64)
+    runs-on: windows-2025-vs2026
+    steps:
+      - uses: actions/checkout@v4
+      - uses: microsoft/setup-msbuild@v2
       - name: Kit de développement de pilotes (WDK via NuGet)
         run: nuget restore driver\packages.config -PackagesDirectory driver\packages
       - name: Compilation (Release x64, signature de test)
