@@ -180,7 +180,7 @@ pub fn pick_setup(files: &[String], arch: Arch) -> Option<String> {
     }
 }
 
-/// Vrai si la sortie de [`signature_script`] décrit une signature valide de VB-Audio.
+/// Vrai si la sortie du script de vérification de signature décrit une signature valide de VB-Audio.
 ///
 /// Format attendu : `Statut|Sujet du certificat`, par exemple
 /// `Valid|CN=Vincent Burel, O=Vincent Burel, L=…`.
