@@ -132,3 +132,33 @@ pub fn builtin_presets() -> Vec<(&'static str, Params)> {
 
     vec![("Voix naturelle", natural), ("Voix radio", radio), ("Stream / jeu", stream), ("Traitement léger", light)]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_eq_is_ordered_by_frequency() {
+        let eq = default_eq();
+        assert!(eq.windows(2).all(|w| w[0].freq_hz < w[1].freq_hz));
+        assert_eq!(eq[3].kind, EqKind::HighShelf);
+    }
+
+    #[test]
+    fn presets_are_distinct() {
+        let p = builtin_presets();
+        assert_eq!(p.len(), 4);
+        for i in 0..p.len() {
+            for j in i + 1..p.len() {
+                assert_ne!(p[i].1, p[j].1, "« {} » et « {} » sont identiques", p[i].0, p[j].0);
+            }
+        }
+        assert_eq!(p[0].1, Params::default(), "le premier préréglage est le réglage par défaut");
+    }
+
+    #[test]
+    fn enum_names_are_stable_in_json() {
+        // Renommer une variante casserait les fichiers de réglages existants.
+        assert_eq!(serde_json::to_string(&EqKind::HighShelf).unwrap_or_default(), "\"HighShelf\"");
+    }
+}
