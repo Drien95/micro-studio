@@ -7,7 +7,7 @@
 use crate::dsp::loudness::integrated_lufs;
 use crate::dsp::util::{SAMPLE_RATE, db_to_lin, lin_to_db};
 use crate::dsp::{Chain, FRAME};
-use crate::params::{MAX_NOTCHES, Params};
+use crate::params::{DenoiseEngine, MAX_NOTCHES, Params};
 use rustfft::{FftPlanner, num_complex::Complex};
 use std::ops::Range;
 
@@ -522,19 +522,50 @@ pub fn run(rec: &Recording, mut progress: impl FnMut(f32)) -> CalibrationResult 
     let baseline = Params { bypass: true, input_gain_db: base.input_gain_db, ..Params::default() };
     let baseline_score = score(&Chain::render(&baseline, &full).0, &mask, &layout);
 
+    // Manche 1 : toutes les variantes avec RNNoise (rapide). Manche 2 : les
+    // meilleures repassent avec DeepFilterNet (3 fois plus lent).
     let candidates = candidates(&base);
-
-    // Le tournoi est réparti sur tous les cœurs du processeur.
-    let total = candidates.len();
+    let total = candidates.len() + FINALISTS;
     let done = std::sync::atomic::AtomicUsize::new(0);
-    let workers = std::thread::available_parallelism().map_or(2, std::num::NonZero::get).min(total);
-    let per = total.div_ceil(workers);
-    let mut results: Vec<(Params, Score)> = Vec::with_capacity(total);
+    let mut results = evaluate_all(&candidates, &full, &mask, &layout, &done, total, &mut progress);
+    results.sort_by(|a, b| b.1.total.total_cmp(&a.1.total));
+    let finalists: Vec<Params> = results
+        .iter()
+        .take(FINALISTS)
+        .map(|(p, _)| Params { denoise_engine: DenoiseEngine::DeepFilter, ..p.clone() })
+        .collect();
+    results.extend(evaluate_all(&finalists, &full, &mask, &layout, &done, total, &mut progress));
+    progress(1.0);
+    let best = results.into_iter().max_by(|a, b| a.1.total.total_cmp(&b.1.total));
+    let (params, score) = best.expect("au moins un candidat");
+    CalibrationResult { analysis, params, score, baseline_score, candidates_tested: total }
+}
+
+/// Variantes de la manche 1 qui repassent avec DeepFilterNet.
+const FINALISTS: usize = 6;
+
+/// Note des variantes en parallèle sur tous les cœurs du processeur.
+/// `done` compte les variantes notées, sur `total` pour toute la séance.
+fn evaluate_all(
+    candidates: &[Params],
+    full: &[f32],
+    mask: &[bool],
+    layout: &Layout,
+    done: &std::sync::atomic::AtomicUsize,
+    total: usize,
+    progress: &mut impl FnMut(f32),
+) -> Vec<(Params, Score)> {
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let workers = std::thread::available_parallelism().map_or(2, std::num::NonZero::get).min(candidates.len());
+    let per = candidates.len().div_ceil(workers);
+    let mut results: Vec<(Params, Score)> = Vec::with_capacity(candidates.len());
     std::thread::scope(|scope| {
         let handles: Vec<_> = candidates
             .chunks(per)
             .map(|chunk| {
-                let (full, mask, layout, done) = (&full, &mask, &layout, &done);
+                let (full, mask, layout, done) = (full, mask, layout, done);
                 scope.spawn(move || {
                     chunk
                         .iter()
@@ -555,19 +586,26 @@ pub fn run(rec: &Recording, mut progress: impl FnMut(f32)) -> CalibrationResult 
             results.extend(h.join().expect("calcul du tournoi"));
         }
     });
-    progress(1.0);
-    let best = results.into_iter().max_by(|a, b| a.1.total.total_cmp(&b.1.total));
-    let (params, score) = best.expect("au moins un candidat");
-    CalibrationResult { analysis, params, score, baseline_score, candidates_tested: total }
+    results
 }
 
 /// Ajuste le gain de sortie pour viser la bonne sonie, puis note le rendu.
+///
+/// Le rendu est réaligné sur l'original (retard du débruiteur et de la porte
+/// vocale) : sinon le début de chaque mot compterait comme « coupé » et les
+/// moteurs les plus lents seraient injustement pénalisés.
 fn evaluate(mut p: Params, full: &[f32], mask: &[bool], layout: &Layout) -> (Params, Score) {
-    let (out, _) = Chain::render(&p, full);
+    let render = |p: &Params| {
+        let (mut out, _) = Chain::render(p, full);
+        let lag = Chain::latency_samples(p).min(out.len());
+        out.drain(..lag);
+        out.resize(full.len(), 0.0);
+        out
+    };
+    let out = render(&p);
     let lufs = integrated_lufs(out.get(layout.speech_samples.clone()).unwrap_or(&out));
     p.output_gain_db = (TARGET_LUFS - lufs).clamp(-6.0, 6.0);
-    let (out, _) = Chain::render(&p, full);
-    let s = score(&out, mask, layout);
+    let s = score(&render(&p), mask, layout);
     (p, s)
 }
 
@@ -844,7 +882,13 @@ mod tests {
         let a = analyze(&rec.silence, &rec.keyboard, &rec.speech);
         assert!(a.keyboard_peak_db > a.noise_floor_db + 20.0, "{a:?}");
         let r = run(&rec, |_| {});
-        assert!(r.score.keyboard_reduction_db < MAX_REDUCTION_DB);
+        assert!(
+            r.score.keyboard_reduction_db > r.baseline_score.keyboard_reduction_db,
+            "{:?} / {:?}",
+            r.score,
+            r.baseline_score
+        );
+        assert!(r.baseline_score.keyboard_reduction_db < MAX_REDUCTION_DB, "sans traitement, les touches s'entendent");
         assert!(r.score.words_cut_ratio < 0.2, "{:?}", r.score);
     }
 

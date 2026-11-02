@@ -26,7 +26,7 @@ fn progress_is_reported_up_to_one() {
         last = p;
     });
     assert!((last - 1.0).abs() < f32::EPSILON);
-    assert_eq!(r.candidates_tested, 54);
+    assert_eq!(r.candidates_tested, 60, "54 variantes RNNoise + 6 finalistes DeepFilterNet");
 }
 
 #[test]

@@ -3,7 +3,7 @@
 use crate::calibrate::{self, CalibrationResult};
 use crate::engine::{self, AudioBackend, CpalBackend, DeviceLists, Engine, INTERNAL_RATE, Shared};
 use crate::monitor::{self, CpalMonitor, Monitor, MonitorBackend, MonitorShared};
-use crate::params::{EqKind, Params, builtin_presets};
+use crate::params::{DenoiseEngine, EqKind, Params, builtin_presets};
 use crate::settings::Settings;
 use crate::vbcable::{self, Outcome, Step};
 use eframe::egui::{self, Color32, RichText};
@@ -353,44 +353,7 @@ impl App {
             ui.add(egui::Slider::new(&mut p.hpf_hz, 40.0..=200.0).text("Fréquence").suffix(" Hz").logarithmic(true));
         });
 
-        section(ui, "Anti-bourdonnement", Some(&mut p.notch_enabled), |ui| {
-            ui.label(
-                RichText::new("Retire les « zzzz » continus (secteur électrique, USB). Le calibrage les repère.")
-                    .weak(),
-            );
-            let found: Vec<String> =
-                p.notch_freqs_hz.iter().filter(|&&f| f > 0.0).map(|f| format!("{f:.0} Hz")).collect();
-            if found.is_empty() {
-                ui.label("Aucun bourdonnement repéré.");
-            } else {
-                ui.label(format!("Filtré : {}", found.join(", ")));
-            }
-        });
-
-        section(ui, "Noise gate", Some(&mut p.gate_enabled), |ui| {
-            ui.label(RichText::new("Coupe le micro quand tu ne parles pas.").weak());
-            ui.add(egui::Slider::new(&mut p.gate_threshold_db, -80.0..=-10.0).text("Seuil").suffix(" dB"))
-                .on_hover_text("En dessous de ce niveau, la porte se ferme. Trop haut : la fin des mots est coupée.");
-            ui.add(egui::Slider::new(&mut p.gate_range_db, -80.0..=0.0).text("Atténuation").suffix(" dB"));
-            ui.add(egui::Slider::new(&mut p.gate_hold_ms, 0.0..=500.0).text("Maintien").suffix(" ms"));
-            ui.add(egui::Slider::new(&mut p.gate_release_ms, 10.0..=1000.0).text("Relâchement").suffix(" ms"));
-        });
-
-        section(ui, "Suppression de bruit (IA)", Some(&mut p.denoise_enabled), |ui| {
-            ui.label(RichText::new("Un réseau de neurones (RNNoise) retire ventilateur, clavier, souffle.").weak());
-            ui.add(egui::Slider::new(&mut p.denoise_mix, 0.0..=1.0).text("Intensité"));
-            ui.checkbox(&mut p.voice_gate_enabled, "Couper tout ce qui n'est pas de la voix (clavier, souris)")
-                .on_hover_text(
-                    "Le réseau de neurones ferme le micro quand il n'entend pas de voix, même si le bruit est fort.",
-                );
-            ui.add_enabled(
-                p.voice_gate_enabled,
-                egui::Slider::new(&mut p.voice_gate_threshold, 0.1..=0.9).text("Exigence"),
-            )
-            .on_hover_text(
-                "Plus c'est haut, plus il faut être sûr que c'est de la voix. Trop haut : des mots sont coupés.",
-            );
-        });
+        noise_sections(ui, &mut p);
 
         section(ui, "De-esser", Some(&mut p.deesser_enabled), |ui| {
             ui.label(RichText::new("Adoucit les « s » et « ch » trop sifflants.").weak());
@@ -597,6 +560,54 @@ impl App {
             self.calib = n;
         }
     }
+}
+
+/// Sections contre les bruits : bourdonnement, porte, suppression par IA.
+fn noise_sections(ui: &mut egui::Ui, p: &mut Params) {
+    section(ui, "Anti-bourdonnement", Some(&mut p.notch_enabled), |ui| {
+        ui.label(
+            RichText::new("Retire les « zzzz » continus (secteur électrique, USB). Le calibrage les repère.").weak(),
+        );
+        let found: Vec<String> = p.notch_freqs_hz.iter().filter(|&&f| f > 0.0).map(|f| format!("{f:.0} Hz")).collect();
+        if found.is_empty() {
+            ui.label("Aucun bourdonnement repéré.");
+        } else {
+            ui.label(format!("Filtré : {}", found.join(", ")));
+        }
+    });
+
+    section(ui, "Noise gate", Some(&mut p.gate_enabled), |ui| {
+        ui.label(RichText::new("Coupe le micro quand tu ne parles pas.").weak());
+        ui.add(egui::Slider::new(&mut p.gate_threshold_db, -80.0..=-10.0).text("Seuil").suffix(" dB"))
+            .on_hover_text("En dessous de ce niveau, la porte se ferme. Trop haut : la fin des mots est coupée.");
+        ui.add(egui::Slider::new(&mut p.gate_range_db, -80.0..=0.0).text("Atténuation").suffix(" dB"));
+        ui.add(egui::Slider::new(&mut p.gate_hold_ms, 0.0..=500.0).text("Maintien").suffix(" ms"));
+        ui.add(egui::Slider::new(&mut p.gate_release_ms, 10.0..=1000.0).text("Relâchement").suffix(" ms"));
+    });
+
+    section(ui, "Suppression de bruit (IA)", Some(&mut p.denoise_enabled), |ui| {
+        ui.label(RichText::new("Un réseau de neurones retire ventilateur, clavier, souffle.").weak());
+        ui.horizontal(|ui| {
+            ui.label("Moteur :");
+            ui.radio_value(&mut p.denoise_engine, DenoiseEngine::RnNoise, "RNNoise (léger)")
+                .on_hover_text("Peu gourmand, 10 ms de retard.");
+            ui.radio_value(&mut p.denoise_engine, DenoiseEngine::DeepFilter, "DeepFilterNet (premium)").on_hover_text(
+                "Plus efficace sur le clavier et les bruits brefs, son plus naturel dans les aigus. 40 ms de retard.",
+            );
+        });
+        ui.add(egui::Slider::new(&mut p.denoise_mix, 0.0..=1.0).text("Intensité"));
+        ui.checkbox(&mut p.voice_gate_enabled, "Couper tout ce qui n'est pas de la voix (clavier, souris)")
+            .on_hover_text(
+                "Le réseau de neurones ferme le micro quand il n'entend pas de voix, même si le bruit est fort.",
+            );
+        ui.add_enabled(
+            p.voice_gate_enabled,
+            egui::Slider::new(&mut p.voice_gate_threshold, 0.1..=0.9).text("Exigence"),
+        )
+        .on_hover_text(
+            "Plus c'est haut, plus il faut être sûr que c'est de la voix. Trop haut : des mots sont coupés.",
+        );
+    });
 }
 
 /// Tableau « sans traitement / avec tes réglages » du rapport de calibrage.

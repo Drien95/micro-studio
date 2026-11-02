@@ -8,7 +8,7 @@
 
 use micro_studio::dsp::resample::Resampler;
 use micro_studio::dsp::{Chain, FRAME};
-use micro_studio::params::{Params, builtin_presets};
+use micro_studio::params::{DenoiseEngine, Params, builtin_presets};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
@@ -87,6 +87,27 @@ fn chain_process_does_not_allocate() {
         });
         assert_eq!(n, 0, "le préréglage « {name} » alloue {n} fois dans Chain::process");
     }
+}
+
+#[test]
+fn realtime_chain_with_deepfilter_does_not_allocate() {
+    // DeepFilterNet alloue : il tourne dans son propre fil ; le fil audio ne
+    // fait qu'échanger des trames par des canaux bornés.
+    let params = Params { denoise_engine: DenoiseEngine::DeepFilter, voice_gate_enabled: true, ..Params::default() };
+    let input = test_signal();
+    let mut chain = Chain::new_realtime(&params);
+    let mut frame = [0f32; FRAME];
+    chain.process(&mut frame);
+    let n = allocations_during(|| {
+        for chunk in input.as_chunks::<FRAME>().0 {
+            frame = *chunk;
+            chain.process(&mut frame);
+        }
+    });
+    assert_eq!(n, 0, "la chaîne temps réel avec DeepFilterNet alloue {n} fois");
+    // Changer de moteur en cours de route n'alloue rien non plus.
+    let n = allocations_during(|| chain.set_params(&Params::default()));
+    assert_eq!(n, 0);
 }
 
 #[test]

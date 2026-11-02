@@ -33,6 +33,9 @@ allow = [
     "BlueOak-1.0.0",
     "OFL-1.1",
     "Ubuntu-font-1.0",
+    # Domaine public (tiny-keccak, utilisé seulement à la compilation par
+    # rust-ini, lui-même tiré par deep-filter-rt).
+    "CC0-1.0",
     # Copyleft faible, limité aux fichiers de la dépendance : compatible.
     "MPL-2.0",
 ]

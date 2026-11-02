@@ -274,7 +274,7 @@ impl InputProcessor {
         Self {
             channels: channels.max(1),
             resampler: Resampler::new(device_rate, INTERNAL_RATE),
-            chain: Chain::new(params),
+            chain: Chain::new_realtime(params),
             seen_version: 0,
             frame: [0.0; FRAME],
             raw: [0.0; FRAME],

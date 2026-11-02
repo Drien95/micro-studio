@@ -9,6 +9,13 @@ projet respecte le [versionnage sémantique](https://semver.org/lang/fr/)
 ## [Non publié]
 
 ### Ajouté
+- Moteur de suppression de bruit « premium » DeepFilterNet3 (`dsp::deepfilter`,
+  via `deep-filter-rt`, modèle embarqué vérifié identique à l'original par
+  SHA-256). Au choix avec RNNoise dans « Suppression de bruit ». En temps réel
+  il tourne dans son propre fil (canaux bornés, aucune allocation côté audio),
+  pour 40 ms de retard au total. Le calibrage fait repasser ses 6 meilleures
+  variantes avec DeepFilterNet et garde le meilleur des deux moteurs ; les
+  rendus sont réalignés sur l'original pour ne pas pénaliser le retard.
 - Calibrage : nouvelle étape « tape au clavier sans parler » (8 s). Les
   touches sont mesurées, la porte de bruit est placée au-dessus de leurs
   crêtes quand c'est possible, et le tournoi note maintenant l'écart entre la

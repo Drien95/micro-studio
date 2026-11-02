@@ -9,6 +9,16 @@ pub enum EqKind {
     HighShelf,
 }
 
+/// Moteur de suppression de bruit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DenoiseEngine {
+    /// RNNoise : léger, 10 ms de retard.
+    #[default]
+    RnNoise,
+    /// DeepFilterNet3 : plus efficace (bruits brefs, aigus), 40 ms de retard.
+    DeepFilter,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EqBand {
     pub kind: EqKind,
@@ -47,6 +57,7 @@ pub struct Params {
     pub gate_range_db: f32,
 
     pub denoise_enabled: bool,
+    pub denoise_engine: DenoiseEngine,
     /// 0 = signal d'origine, 1 = débruitage complet.
     pub denoise_mix: f32,
 
@@ -100,6 +111,7 @@ impl Default for Params {
             gate_release_ms: 150.0,
             gate_range_db: -40.0,
             denoise_enabled: true,
+            denoise_engine: DenoiseEngine::RnNoise,
             denoise_mix: 1.0,
             voice_gate_enabled: false,
             voice_gate_threshold: 0.5,
@@ -189,5 +201,7 @@ mod tests {
     fn enum_names_are_stable_in_json() {
         // Renommer une variante casserait les fichiers de réglages existants.
         assert_eq!(serde_json::to_string(&EqKind::HighShelf).unwrap_or_default(), "\"HighShelf\"");
+        assert_eq!(serde_json::to_string(&DenoiseEngine::DeepFilter).unwrap_or_default(), "\"DeepFilter\"");
+        assert_eq!(serde_json::to_string(&DenoiseEngine::RnNoise).unwrap_or_default(), "\"RnNoise\"");
     }
 }
