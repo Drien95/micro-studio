@@ -55,6 +55,14 @@ impl Biquad {
         self.set(alpha, 0.0, -alpha, 1.0 + alpha, -2.0 * c, 1.0 - alpha);
     }
 
+    /// Coupe-bande (« notch ») : supprime une fréquence précise, par exemple
+    /// le bourdonnement du secteur à 50 Hz et ses harmoniques.
+    pub fn set_notch(&mut self, freq: f32, q: f32) {
+        let (c, s) = Self::w0(freq);
+        let alpha = Self::alpha(s, q);
+        self.set(1.0, -2.0 * c, 1.0, 1.0 + alpha, -2.0 * c, 1.0 - alpha);
+    }
+
     pub fn set_peak(&mut self, freq: f32, q: f32, gain_db: f32) {
         let (c, s) = Self::w0(freq);
         let a = 10f32.powf(gain_db / 40.0);
@@ -127,6 +135,15 @@ mod tests {
         for x in [0.0, 0.5, -1.0, 0.25] {
             assert!((f.process(x) - x).abs() < f32::EPSILON);
         }
+    }
+
+    #[test]
+    fn notch_removes_only_its_frequency() {
+        let mut f = Biquad::default();
+        f.set_notch(150.0, 30.0);
+        assert!(gain_db(f, 150.0) < -30.0, "{}", gain_db(f, 150.0));
+        assert!(gain_db(f, 200.0).abs() < 0.5);
+        assert!(gain_db(f, 1000.0).abs() < 0.1);
     }
 
     #[test]

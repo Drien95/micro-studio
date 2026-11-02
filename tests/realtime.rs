@@ -61,10 +61,20 @@ fn test_signal() -> Vec<f32> {
     speech
 }
 
+/// Préréglages intégrés, plus un réglage où tout est actif (coupe-bandes et
+/// porte vocale compris), comme après un calibrage.
+fn all_settings() -> Vec<(&'static str, Params)> {
+    let mut all = builtin_presets();
+    let mut full = Params { voice_gate_enabled: true, voice_gate_confirm_ms: 50.0, ..Params::default() };
+    full.notch_freqs_hz = [50.0, 100.0, 150.0, 1000.0, 2000.0, 4000.0];
+    all.push(("Tout activé", full));
+    all
+}
+
 #[test]
 fn chain_process_does_not_allocate() {
     let input = test_signal();
-    for (name, params) in builtin_presets() {
+    for (name, params) in all_settings() {
         let mut chain = Chain::new(&params);
         let mut frame = [0f32; FRAME];
         // Une trame de chauffe : les états internes sont créés à l'initialisation.
@@ -81,7 +91,7 @@ fn chain_process_does_not_allocate() {
 
 #[test]
 fn set_params_does_not_allocate() {
-    let presets = builtin_presets();
+    let presets = all_settings();
     let mut chain = Chain::new(&Params::default());
     let n = allocations_during(|| {
         for (_, p) in &presets {

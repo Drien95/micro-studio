@@ -9,6 +9,21 @@ projet respecte le [versionnage sémantique](https://semver.org/lang/fr/)
 ## [Non publié]
 
 ### Ajouté
+- Calibrage : nouvelle étape « tape au clavier sans parler » (8 s). Les
+  touches sont mesurées, la porte de bruit est placée au-dessus de leurs
+  crêtes quand c'est possible, et le tournoi note maintenant l'écart entre la
+  voix et le clavier.
+- Porte vocale : coupe ce que le réseau de neurones (RNNoise) n'entend pas
+  comme de la voix, même fort (clavier, souris). Elle exige 30 ms de voix
+  continue avant de s'ouvrir et retarde le son d'autant (20 ms) pour ne pas
+  couper le début des mots. Le calibrage choisit de l'activer ou non.
+- Anti-bourdonnement : le calibrage cherche les raies continues dans le
+  silence (secteur 50 Hz et harmoniques, sifflement USB, FFT de 16 384 points)
+  et place jusqu'à 6 filtres coupe-bande étroits.
+- Mesure de sonie intégrée en LUFS (UIT-R BS.1770, module `dsp::loudness`) :
+  le calibrage vise -18 LUFS au lieu d'un niveau RMS maison.
+- Rapport de calibrage « sans traitement / avec tes réglages » : voix au-dessus
+  du bruit et du clavier, volume en LUFS, régularité, mots coupés, équilibre.
 - Retour casque « M'écouter dans le casque » (module `monitor`) : rejoue le
   son tel que le reçoivent Discord ou OBS (capté sur *CABLE Output*), avec choix
   du casque et volume. Le câble virtuel n'est jamais utilisé comme sortie du

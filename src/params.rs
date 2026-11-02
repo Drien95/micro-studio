@@ -17,6 +17,9 @@ pub struct EqBand {
     pub q: f32,
 }
 
+/// Nombre maximal de filtres coupe-bande (bourdonnement et ses harmoniques).
+pub const MAX_NOTCHES: usize = 6;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Params {
@@ -27,6 +30,13 @@ pub struct Params {
 
     pub hpf_enabled: bool,
     pub hpf_hz: f32,
+
+    /// Filtres coupe-bande contre les bourdonnements (secteur, USB). Placés
+    /// par le calibrage ; 0 Hz = filtre inutilisé.
+    pub notch_enabled: bool,
+    pub notch_freqs_hz: [f32; MAX_NOTCHES],
+    /// Largeur de chaque coupe-bande (Hz) : étroite pour ne pas toucher la voix.
+    pub notch_width_hz: f32,
 
     pub gate_enabled: bool,
     pub gate_threshold_db: f32,
@@ -39,6 +49,17 @@ pub struct Params {
     pub denoise_enabled: bool,
     /// 0 = signal d'origine, 1 = débruitage complet.
     pub denoise_mix: f32,
+
+    /// Porte vocale : coupe ce qui n'est pas de la voix d'après le réseau de
+    /// neurones (touches de clavier, souris), même quand c'est fort.
+    pub voice_gate_enabled: bool,
+    /// Probabilité de voix (0..1) au-delà de laquelle la porte s'ouvre.
+    pub voice_gate_threshold: f32,
+    /// Durée de voix continue exigée avant d'ouvrir (ms) ; ajoute autant de
+    /// retard (moins 10 ms) quand la porte vocale est active.
+    pub voice_gate_confirm_ms: f32,
+    pub voice_gate_hold_ms: f32,
+    pub voice_gate_range_db: f32,
 
     pub deesser_enabled: bool,
     pub deesser_freq_hz: f32,
@@ -69,6 +90,9 @@ impl Default for Params {
             input_gain_db: 0.0,
             hpf_enabled: true,
             hpf_hz: 90.0,
+            notch_enabled: true,
+            notch_freqs_hz: [0.0; MAX_NOTCHES],
+            notch_width_hz: 4.0,
             gate_enabled: true,
             gate_threshold_db: -45.0,
             gate_attack_ms: 1.0,
@@ -77,6 +101,11 @@ impl Default for Params {
             gate_range_db: -40.0,
             denoise_enabled: true,
             denoise_mix: 1.0,
+            voice_gate_enabled: false,
+            voice_gate_threshold: 0.5,
+            voice_gate_confirm_ms: 30.0,
+            voice_gate_hold_ms: 300.0,
+            voice_gate_range_db: -30.0,
             deesser_enabled: true,
             deesser_freq_hz: 6500.0,
             deesser_threshold_db: -30.0,

@@ -1,6 +1,7 @@
-//! Noise gate, compresseur, de-esser et limiteur.
+//! Noise gate, porte vocale, compresseur, de-esser et limiteur.
 
 use super::biquad::Biquad;
+use super::denoise::FRAME;
 use super::util::{SAMPLE_RATE, db_to_lin, lin_to_db, time_coef};
 
 // ---------------------------------------------------------------------------
@@ -60,6 +61,116 @@ impl Gate {
 
     pub fn is_open(&self) -> bool {
         self.open
+    }
+
+    pub fn gain(&self) -> f32 {
+        self.gain
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Porte vocale : se ferme quand le réseau de neurones ne détecte pas de voix.
+// Contrairement à la porte classique, elle ne s'ouvre pas sur un bruit fort
+// mais non vocal (touches de clavier, souris, objet posé sur le bureau).
+//
+// Un clic fait parfois « croire » à la voix pendant une ou deux trames ; une
+// syllabe dure, elle, au moins 50 ms. La porte exige donc plusieurs trames
+// vocales d'affilée, et retarde le son d'autant pour ne pas couper le début
+// des mots (ouverture rétroactive).
+
+/// Durée d'une trame de détection de voix (ms).
+const VAD_FRAME_MS: f32 = 10.0;
+/// Durée du fondu de fermeture (ms) : assez long pour ne pas « claquer ».
+const VAD_FADE_MS: f32 = 60.0;
+/// Nombre maximal de trames de confirmation (et donc de retard ajouté).
+pub const MAX_CONFIRM_FRAMES: usize = 5;
+
+#[derive(Debug)]
+pub struct VoiceGate {
+    threshold: f32,
+    floor: f32,
+    confirm: usize,
+    streak: usize,
+    hold_frames: u32,
+    hold_left: u32,
+    fade_step: f32,
+    gain: f32,
+    delay: [[f32; FRAME]; MAX_CONFIRM_FRAMES],
+    pos: usize,
+}
+
+impl Default for VoiceGate {
+    fn default() -> Self {
+        Self {
+            threshold: 0.5,
+            floor: 0.0,
+            confirm: 1,
+            streak: 0,
+            hold_frames: 0,
+            hold_left: 0,
+            fade_step: 1.0,
+            gain: 1.0,
+            delay: [[0.0; FRAME]; MAX_CONFIRM_FRAMES],
+            pos: 0,
+        }
+    }
+}
+
+impl VoiceGate {
+    /// `threshold` : probabilité de voix (0..1) qui compte comme « voix » ;
+    /// `confirm_ms` : durée de voix continue avant d'ouvrir (retard ajouté = cette durée - 10 ms) ;
+    /// `hold_ms` : temps de maintien après la dernière trame vocale ;
+    /// `range_db` : atténuation quand la porte est fermée.
+    pub fn configure(&mut self, threshold: f32, confirm_ms: f32, hold_ms: f32, range_db: f32) {
+        self.threshold = if threshold.is_finite() { threshold.clamp(0.0, 1.0) } else { 0.5 };
+        self.confirm = ((confirm_ms.max(0.0) / VAD_FRAME_MS).round() as usize).clamp(1, MAX_CONFIRM_FRAMES);
+        self.floor = db_to_lin(range_db.min(0.0));
+        self.hold_frames = (hold_ms.max(0.0) / VAD_FRAME_MS).round() as u32;
+        self.fade_step = (1.0 - self.floor) * VAD_FRAME_MS / VAD_FADE_MS;
+    }
+
+    /// Retard ajouté par la porte (en trames de 10 ms).
+    pub fn latency_frames(&self) -> usize {
+        self.confirm - 1
+    }
+
+    /// Applique la porte à une trame, d'après la probabilité de voix `vad`.
+    /// La trame rendue est celle reçue `latency_frames()` appels plus tôt.
+    /// Le gain varie linéairement dans la trame : pas de clic.
+    pub fn process(&mut self, frame: &mut [f32; FRAME], vad: f32) {
+        self.streak = if vad >= self.threshold { self.streak + 1 } else { 0 };
+        let open = if self.streak >= self.confirm {
+            self.hold_left = self.hold_frames;
+            true
+        } else if self.hold_left > 0 {
+            self.hold_left -= 1;
+            true
+        } else {
+            false
+        };
+
+        // Ligne à retard : on rend la trame d'il y a `confirm - 1` appels.
+        let lag = self.confirm - 1;
+        if lag > 0 {
+            std::mem::swap(&mut self.delay[self.pos], frame);
+            // `frame` contient maintenant la plus ancienne trame si le tampon
+            // circulaire fait exactement `lag` cases.
+            self.pos = (self.pos + 1) % lag;
+        }
+
+        // Ouverture immédiate (une trame), fermeture en fondu.
+        let target = if open { 1.0 } else { (self.gain - self.fade_step).max(self.floor) };
+        let start = self.gain;
+        let n = FRAME as f32;
+        for (i, x) in frame.iter_mut().enumerate() {
+            *x *= start + (target - start) * (i + 1) as f32 / n;
+        }
+        self.gain = target;
+    }
+
+    /// Vrai si la porte laisse passer le son (même partiellement).
+    pub fn is_open(&self) -> bool {
+        self.gain > self.floor + 1e-6
     }
 
     pub fn gain(&self) -> f32 {
@@ -255,6 +366,61 @@ mod tests {
         assert!(lin_to_db(g.gain()) < -40.0, "{} dB", lin_to_db(g.gain()));
         run(|x| g.process(x), 0.0, 48_000);
         assert!((lin_to_db(g.gain()) + 60.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn voice_gate_opens_on_voice_and_fades_out_after_hold() {
+        let mut g = VoiceGate::default();
+        g.configure(0.6, 10.0, 20.0, -40.0);
+        assert_eq!(g.latency_frames(), 0);
+        let mut f = [1.0f32; FRAME];
+        g.process(&mut f, 0.1);
+        assert!(f[FRAME - 1] < 0.9, "pas de voix : la porte commence à se fermer");
+        let mut f = [1.0f32; FRAME];
+        g.process(&mut f, 0.9);
+        assert!((f[FRAME - 1] - 1.0).abs() < 1e-6, "voix : ouverte en une trame");
+        assert!(f[0] < f[FRAME - 1], "ouverture en rampe, sans clic");
+        // Maintien : deux trames (20 ms) restent ouvertes malgré l'absence de voix.
+        for _ in 0..2 {
+            let mut f = [1.0f32; FRAME];
+            g.process(&mut f, 0.0);
+            assert!((f[FRAME - 1] - 1.0).abs() < 1e-6);
+        }
+        for _ in 0..20 {
+            let mut f = [1.0f32; FRAME];
+            g.process(&mut f, 0.0);
+        }
+        assert!(!g.is_open());
+        assert!((lin_to_db(g.gain()) + 40.0).abs() < 0.1);
+        g.configure(f32::NAN, 1000.0, -5.0, 6.0);
+        assert!((g.threshold - 0.5).abs() < f32::EPSILON && g.hold_frames == 0);
+        assert_eq!(g.latency_frames(), MAX_CONFIRM_FRAMES - 1);
+    }
+
+    #[test]
+    fn voice_gate_ignores_short_bursts_but_keeps_word_onsets() {
+        let mut g = VoiceGate::default();
+        g.configure(0.5, 30.0, 0.0, -60.0);
+        assert_eq!(g.latency_frames(), 2);
+        let mut run = |vads: &[f32]| -> Vec<f32> {
+            vads.iter()
+                .enumerate()
+                .map(|(i, &v)| {
+                    let mut f = [i as f32 + 1.0; FRAME];
+                    g.process(&mut f, v);
+                    f[FRAME - 1]
+                })
+                .collect()
+        };
+        // Un clic : deux trames « vocales » seulement. Rien ne passe.
+        let out = run(&[0.0; 10]);
+        assert!(out[9] < 0.01);
+        let out = run(&[0.9, 0.9, 0.0, 0.0, 0.0, 0.0]);
+        assert!(out.iter().all(|&x| x < 0.05), "{out:?}");
+        // Une syllabe : la porte s'ouvre et rend aussi la première trame de voix,
+        // retardée de deux trames.
+        let out = run(&[0.0, 0.9, 0.9, 0.9, 0.9]);
+        assert!((out[3] - 2.0).abs() < 1e-3, "première trame vocale rendue intacte : {out:?}");
     }
 
     #[test]

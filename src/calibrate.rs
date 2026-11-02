@@ -1,14 +1,19 @@
 //! Calibrage automatique (« benchmark ») : à partir de quelques secondes de
-//! silence et d'une lecture à voix haute, mesure le micro, la pièce et la voix,
-//! propose des réglages, puis organise un tournoi entre variantes pour garder
-//! celle qui obtient le meilleur score.
+//! silence, de frappe au clavier et d'une lecture à voix haute, mesure le
+//! micro, la pièce, les bruits parasites et la voix, propose des réglages,
+//! puis organise un tournoi entre variantes pour garder celle qui obtient le
+//! meilleur score.
 
+use crate::dsp::loudness::integrated_lufs;
 use crate::dsp::util::{SAMPLE_RATE, db_to_lin, lin_to_db};
 use crate::dsp::{Chain, FRAME};
-use crate::params::Params;
+use crate::params::{MAX_NOTCHES, Params};
 use rustfft::{FftPlanner, num_complex::Complex};
+use std::ops::Range;
 
 pub const SILENCE_SECS: f32 = 8.0;
+/// Phase où l'on tape au clavier sans parler : mesure les bruits de touches.
+pub const KEYBOARD_SECS: f32 = 8.0;
 pub const SPEECH_SECS: f32 = 40.0;
 
 /// Texte à lire pendant la mesure : il contient des « s », des « ch », des
@@ -20,7 +25,11 @@ Je parle normalement, ni trop fort ni trop bas, comme pendant une partie entre a
 Parfois je ris, parfois je chuchote, et parfois je m'emporte un peu : c'est la vie ! \
 Pour finir, je compte jusqu'à dix : un, deux, trois, quatre, cinq, six, sept, huit, neuf, dix.";
 
-/// Niveau moyen de voix visé en sortie (dBFS RMS), proche des pratiques de stream.
+/// Sonie visée en sortie (LUFS intégrés, UIT-R BS.1770). L'AES (TD1004)
+/// recommande -16 à -20 LUFS pour la voix diffusée en ligne ; -18 laisse une
+/// marge aux applis de chat qui remontent elles-mêmes le volume.
+pub const TARGET_LUFS: f32 = -18.0;
+/// Niveau moyen de voix visé en sortie (dBFS RMS), utilisé pour le compresseur.
 pub const TARGET_SPEECH_DB: f32 = -18.0;
 /// Niveau visé avant compression, après le gain d'entrée.
 const PRE_COMP_SPEECH_DB: f32 = -22.0;
@@ -37,6 +46,30 @@ pub struct Analysis {
     pub sibilance_freq_hz: f32,
     pub sibilance_p90_db: f32,
     pub clipped_ratio: f32,
+    /// Niveau des touches de clavier (voir `burst_level`, dBFS RMS).
+    pub keyboard_level_db: f32,
+    /// Crête des touches de clavier (voir `burst_level`, dBFS).
+    pub keyboard_peak_db: f32,
+    /// Crête médiane de la voix (dBFS), à comparer à celle du clavier.
+    pub speech_frame_peak_db: f32,
+    /// Bourdonnements et sifflements continus trouvés dans le silence.
+    pub tonal_noise: Vec<TonalPeak>,
+}
+
+/// Raie parasite continue (secteur 50 Hz et harmoniques, sifflement USB…).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TonalPeak {
+    pub freq_hz: f32,
+    /// Hauteur de la raie au-dessus du bruit voisin (dB).
+    pub prominence_db: f32,
+}
+
+/// Enregistrement de l'assistant découpé en ses trois phases (48 kHz, mono).
+#[derive(Clone, Debug, Default)]
+pub struct Recording {
+    pub silence: Vec<f32>,
+    pub keyboard: Vec<f32>,
+    pub speech: Vec<f32>,
 }
 
 /// Densité spectrale moyenne (dB) de la voix dans des zones utiles à l'ingé son.
@@ -65,6 +98,25 @@ fn frame_rms_db(x: &[f32]) -> Vec<f32> {
         .collect()
 }
 
+fn frame_peak_db(x: &[f32]) -> Vec<f32> {
+    x.chunks(FRAME)
+        .filter(|c| c.len() == FRAME)
+        .map(|c| lin_to_db(c.iter().fold(0f32, |m, s| m.max(s.abs()))))
+        .collect()
+}
+
+/// Trames par fenêtre de 100 ms : on tape rarement plus de dix touches par seconde.
+const BURST_FRAMES: usize = 10;
+
+/// Niveau typique des bruits brefs (touches) : maximum de chaque fenêtre de
+/// 100 ms, puis 75e centile. Un simple centile des trames raterait les clics,
+/// qui n'occupent qu'une trame sur dix ou quinze.
+fn burst_level(frame_levels: &[f32]) -> f32 {
+    let maxima: Vec<f32> =
+        frame_levels.chunks(BURST_FRAMES).map(|c| c.iter().copied().fold(f32::NEG_INFINITY, f32::max)).collect();
+    percentile(&maxima, 0.75)
+}
+
 fn percentile(v: &[f32], p: f32) -> f32 {
     if v.is_empty() {
         return -120.0;
@@ -77,18 +129,23 @@ fn percentile(v: &[f32], p: f32) -> f32 {
 
 /// Spectre de puissance moyen (fenêtre de Hann, 2048 points) des trames choisies.
 fn average_spectrum(x: &[f32], keep: impl Fn(usize) -> bool) -> Vec<f32> {
-    const N: usize = 2048;
+    spectrum_n(x, 2048, keep)
+}
+
+/// Spectre de puissance moyen sur `n` points (fenêtre de Hann, recouvrement 50 %).
+fn spectrum_n(x: &[f32], n: usize, keep: impl Fn(usize) -> bool) -> Vec<f32> {
+    let n = n.clamp(64, 1 << 16);
     let mut planner = FftPlanner::<f32>::new();
-    let fft = planner.plan_fft_forward(N);
+    let fft = planner.plan_fft_forward(n);
     let window: Vec<f32> =
-        (0..N).map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / N as f32).cos()).collect();
-    let mut acc = vec![0f32; N / 2];
+        (0..n).map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / n as f32).cos()).collect();
+    let mut acc = vec![0f32; n / 2];
     let mut count = 0;
     let mut start = 0;
-    let mut buf = vec![Complex::new(0f32, 0f32); N];
-    while start + N <= x.len() {
+    let mut buf = vec![Complex::new(0f32, 0f32); n];
+    while start + n <= x.len() {
         if keep(start / FRAME) {
-            for i in 0..N {
+            for i in 0..n {
                 buf[i] = Complex::new(x[start + i] * window[i], 0.0);
             }
             fft.process(&mut buf);
@@ -97,7 +154,7 @@ fn average_spectrum(x: &[f32], keep: impl Fn(usize) -> bool) -> Vec<f32> {
             }
             count += 1;
         }
-        start += N / 2;
+        start += n / 2;
     }
     if count > 0 {
         for a in &mut acc {
@@ -127,7 +184,47 @@ fn peak_freq(spec: &[f32], lo: f32, hi: f32) -> f32 {
     best as f32 * bin_hz
 }
 
-pub fn analyze(silence: &[f32], speech: &[f32]) -> Analysis {
+/// Taille de FFT pour chercher les raies : 2,9 Hz par case à 48 kHz, assez
+/// fin pour séparer 50 Hz de ses voisins.
+const TONAL_FFT: usize = 16_384;
+/// Une raie doit dépasser le bruit voisin d'au moins autant pour être filtrée.
+const TONAL_MIN_PROMINENCE_DB: f32 = 12.0;
+
+/// Cherche les raies continues (bourdonnement, sifflement) dans le silence.
+/// Renvoie au plus [`MAX_NOTCHES`] raies, de la plus marquée à la moins marquée.
+pub fn detect_tonal_noise(silence: &[f32]) -> Vec<TonalPeak> {
+    if silence.len() < TONAL_FFT {
+        return Vec::new();
+    }
+    let spec = spectrum_n(silence, TONAL_FFT, |_| true);
+    let bin_hz = SAMPLE_RATE / TONAL_FFT as f32;
+    let db: Vec<f32> = spec.iter().map(|e| 10.0 * e.max(1e-20).log10()).collect();
+    let (lo, hi) = ((40.0 / bin_hz) as usize, ((16_000.0 / bin_hz) as usize).min(db.len() - 30));
+    let mut found: Vec<TonalPeak> = Vec::new();
+    let mut neighbours = Vec::with_capacity(48);
+    for i in lo..hi {
+        // Maximum local sur ±3 cases (largeur du lobe principal de Hann).
+        if (i - 3..=i + 3).any(|j| db[j] > db[i]) {
+            continue;
+        }
+        neighbours.clear();
+        neighbours.extend(db[i.saturating_sub(27)..i - 4].iter().chain(&db[i + 5..i + 28]).copied());
+        let prominence = db[i] - percentile(&neighbours, 0.5);
+        if prominence < TONAL_MIN_PROMINENCE_DB {
+            continue;
+        }
+        // Interpolation parabolique pour affiner la fréquence au-delà de la case.
+        let (a, b, c) = (db[i - 1], db[i], db[i + 1]);
+        let denom = a - 2.0 * b + c;
+        let offset = if denom.abs() > 1e-6 { (0.5 * (a - c) / denom).clamp(-0.5, 0.5) } else { 0.0 };
+        found.push(TonalPeak { freq_hz: (i as f32 + offset) * bin_hz, prominence_db: prominence });
+    }
+    found.sort_by(|x, y| y.prominence_db.total_cmp(&x.prominence_db));
+    found.truncate(MAX_NOTCHES);
+    found
+}
+
+pub fn analyze(silence: &[f32], keyboard: &[f32], speech: &[f32]) -> Analysis {
     let sil = frame_rms_db(silence);
     let sp = frame_rms_db(speech);
     let noise_floor = percentile(&sil, 0.5);
@@ -169,6 +266,14 @@ pub fn analyze(silence: &[f32], speech: &[f32]) -> Analysis {
         sibilance_freq_hz: sib_freq,
         sibilance_p90_db: percentile(&sib_levels, 0.9),
         clipped_ratio: clipped,
+        keyboard_level_db: if keyboard.len() >= FRAME { burst_level(&frame_rms_db(keyboard)) } else { noise_floor },
+        keyboard_peak_db: burst_level(&frame_peak_db(keyboard)),
+        speech_frame_peak_db: {
+            let peaks = frame_peak_db(speech);
+            let active_peaks: Vec<f32> = peaks.iter().zip(&active).filter(|(_, a)| **a).map(|(l, _)| *l).collect();
+            percentile(&active_peaks, 0.5)
+        },
+        tonal_noise: detect_tonal_noise(silence),
     }
 }
 
@@ -184,16 +289,22 @@ impl Analysis {
     }
 }
 
-/// Sépare l'enregistrement continu de l'assistant (48 kHz) en `(silence, voix)`.
+/// Sépare l'enregistrement continu de l'assistant (48 kHz) en ses trois phases :
+/// silence, frappe au clavier, lecture.
 ///
-/// La première demi-seconde (clic de souris) et la dernière demi-seconde de la
-/// phase silencieuse (transition) sont ignorées.
-pub fn split_recording(all: &[f32]) -> (Vec<f32>, Vec<f32>) {
-    let rate = SAMPLE_RATE;
-    let split = (((SILENCE_SECS - 0.5) * rate) as usize).min(all.len());
-    let skip = ((0.5 * rate) as usize).min(split);
-    let speech_start = ((SILENCE_SECS * rate) as usize).min(all.len());
-    (all[skip..split].to_vec(), all[speech_start..].to_vec())
+/// Une demi-seconde est ignorée au début et à la fin de chaque phase muette
+/// (clic de souris, transitions).
+pub fn split_recording(all: &[f32]) -> Recording {
+    let at = |secs: f32| ((secs * SAMPLE_RATE) as usize).min(all.len());
+    let part = |from: f32, to: f32| {
+        let (a, b) = (at(from), at(to));
+        all[a.min(b)..b].to_vec()
+    };
+    Recording {
+        silence: part(0.5, SILENCE_SECS - 0.5),
+        keyboard: part(SILENCE_SECS + 0.5, SILENCE_SECS + KEYBOARD_SECS - 0.5),
+        speech: all[at(SILENCE_SECS + KEYBOARD_SECS)..].to_vec(),
+    }
 }
 
 /// Vérifie qu'un calibrage est exploitable ; sinon, le message à afficher.
@@ -224,6 +335,23 @@ pub fn propose(a: &Analysis) -> Params {
     let margin = (0.35 * (speech - noise)).max(6.0);
     p.gate_threshold_db = (noise + margin).min(speech - 12.0).clamp(-70.0, -20.0);
 
+    // Clavier : si les touches sont nettement moins fortes que la voix, la porte
+    // se règle juste au-dessus de leurs crêtes (l'enveloppe de la porte suit les
+    // crêtes, pas la moyenne). Sinon, seule la porte vocale peut les distinguer.
+    let keys_peak = a.keyboard_peak_db + g;
+    let voice_peak = a.speech_frame_peak_db + g;
+    let keys_audible = a.keyboard_level_db > a.noise_floor_db + 6.0;
+    if keys_audible && keys_peak + 2.0 <= voice_peak - 8.0 {
+        p.gate_threshold_db = p.gate_threshold_db.max(keys_peak + 2.0).clamp(-70.0, -20.0);
+    }
+    p.voice_gate_enabled = keys_audible;
+
+    // Bourdonnement : un coupe-bande étroit sur chaque raie trouvée dans le silence.
+    p.notch_freqs_hz = [0.0; MAX_NOTCHES];
+    for (slot, peak) in p.notch_freqs_hz.iter_mut().zip(&a.tonal_noise) {
+        *slot = peak.freq_hz;
+    }
+
     // Débruitage : toujours actif ; un peu de signal d'origine si le micro est déjà propre.
     p.denoise_mix = if a.snr_db > 45.0 { 0.8 } else { 1.0 };
 
@@ -253,11 +381,16 @@ pub fn propose(a: &Analysis) -> Params {
     p
 }
 
-#[allow(dead_code)] // détails affichables dans un futur rapport
+/// Note détaillée d'un rendu, affichée dans le rapport du calibrage.
 #[derive(Clone, Debug, Default)]
 pub struct Score {
     pub total: f32,
+    /// Écart entre la voix et le bruit de fond (dB, plus c'est haut mieux c'est).
     pub noise_reduction_db: f32,
+    /// Écart entre la voix et les crêtes du clavier (dB, plus c'est haut mieux c'est).
+    pub keyboard_reduction_db: f32,
+    /// Sonie intégrée de la voix (LUFS).
+    pub loudness_lufs: f32,
     pub level_spread_db: f32,
     pub loudness_error_db: f32,
     pub words_cut_ratio: f32,
@@ -265,9 +398,32 @@ pub struct Score {
     pub tonal_error_db: f32,
 }
 
+/// Où se trouvent les phases dans l'enregistrement complet.
+#[derive(Clone, Debug, Default)]
+pub struct Layout {
+    /// Trames (de [`FRAME`] échantillons) de la phase clavier.
+    pub keyboard_frames: Range<usize>,
+    /// Échantillons de la phase de lecture.
+    pub speech_samples: Range<usize>,
+}
+
+impl Layout {
+    fn of(rec: &Recording) -> Self {
+        let kb_start = rec.silence.len();
+        let sp_start = kb_start + rec.keyboard.len();
+        Self {
+            keyboard_frames: kb_start.div_ceil(FRAME)..sp_start / FRAME,
+            speech_samples: sp_start..sp_start + rec.speech.len(),
+        }
+    }
+}
+
+/// Écart maximal compté pour le bruit (au-delà, l'oreille ne fait plus la différence).
+const MAX_REDUCTION_DB: f32 = 60.0;
+
 /// Note un rendu : plus c'est haut, mieux c'est.
 /// `speech_mask` indique, trame par trame, où il y avait de la voix dans l'enregistrement d'origine.
-pub fn score(output: &[f32], speech_mask: &[bool]) -> Score {
+pub fn score(output: &[f32], speech_mask: &[bool], layout: &Layout) -> Score {
     let levels = frame_rms_db(output);
     let n = levels.len().min(speech_mask.len());
     let sp: Vec<f32> = (0..n).filter(|&i| speech_mask[i]).map(|i| levels[i]).collect();
@@ -275,10 +431,17 @@ pub fn score(output: &[f32], speech_mask: &[bool]) -> Score {
     let speech_level = percentile(&sp, 0.5);
     let noise_level = percentile(&quiet, 0.5).max(-100.0);
 
+    // Clavier : niveau des touches comparé au niveau de la voix.
+    let kb: Vec<f32> = layout.keyboard_frames.clone().filter(|&i| i < n).map(|i| levels[i]).collect();
+    let keyboard =
+        if kb.is_empty() { MAX_REDUCTION_DB } else { (speech_level - burst_level(&kb)).min(MAX_REDUCTION_DB) };
+
     // Mots coupés : trames de voix rendues plus de 15 dB sous le niveau de voix médian.
     let cut = sp.iter().filter(|&&l| l < speech_level - 15.0).count() as f32 / sp.len().max(1) as f32;
     let spread = percentile(&sp, 0.9) - percentile(&sp, 0.1);
-    let loud_err = (speech_level - TARGET_SPEECH_DB).abs();
+    let speech_part = output.get(layout.speech_samples.clone()).unwrap_or(output);
+    let lufs = integrated_lufs(speech_part);
+    let loud_err = (lufs - TARGET_LUFS).abs();
     let clipped = output.iter().filter(|s| s.abs() > 0.995).count() as f32 / output.len().max(1) as f32;
 
     let spec = average_spectrum(output, |i| speech_mask.get(i).copied().unwrap_or(false));
@@ -288,11 +451,14 @@ pub fn score(output: &[f32], speech_mask: &[bool]) -> Score {
         + (band_db(&spec, 9000.0, 14000.0) - body - TARGET_AIR).abs())
         / 3.0;
 
-    let nr = (speech_level - noise_level).min(60.0);
-    let total = nr * 1.0 - spread * 1.5 - loud_err * 1.0 - cut * 200.0 - clipped * 5000.0 - tonal * 0.5;
+    let nr = (speech_level - noise_level).min(MAX_REDUCTION_DB);
+    let total =
+        nr * 1.0 + keyboard * 0.7 - spread * 1.5 - loud_err * 1.0 - cut * 200.0 - clipped * 5000.0 - tonal * 0.5;
     Score {
         total,
         noise_reduction_db: nr,
+        keyboard_reduction_db: keyboard,
+        loudness_lufs: lufs,
         level_spread_db: spread,
         loudness_error_db: loud_err,
         words_cut_ratio: cut,
@@ -311,39 +477,52 @@ pub struct CalibrationResult {
     pub candidates_tested: usize,
 }
 
-/// Lance tout le calibrage : analyse, proposition, puis tournoi des variantes.
-/// `progress` reçoit une valeur entre 0 et 1.
-pub fn run(silence: &[f32], speech: &[f32], mut progress: impl FnMut(f32)) -> CalibrationResult {
-    let analysis = analyze(silence, speech);
-    let base = propose(&analysis);
-
-    // Enregistrement complet : silence puis voix, avec le masque « voix » d'origine.
-    let mut full = Vec::with_capacity(silence.len() + speech.len());
-    full.extend_from_slice(silence);
-    full.extend_from_slice(speech);
-    let gate_level = analysis.noise_floor_db + 12.0;
-    let mask: Vec<bool> = frame_rms_db(&full).iter().map(|&l| l > gate_level).collect();
-
-    let baseline = Params { bypass: true, input_gain_db: base.input_gain_db, ..Params::default() };
-    let baseline_score = score(&Chain::render(&baseline, &full).0, &mask);
-
-    let mut candidates = Vec::new();
+/// Variantes essayées autour des réglages proposés.
+fn candidates(base: &Params) -> Vec<Params> {
+    let mut out = Vec::new();
     for gate_off in [-4.0, 0.0, 3.0] {
         for ratio_mul in [0.75, 1.0, 1.3] {
             for eq_scale in [0.5, 1.0] {
-                for mix in [0.85, 1.0] {
+                // Porte vocale : coupée, tolérante, stricte.
+                for voice in [None, Some(0.5), Some(0.7)] {
                     let mut p = base.clone();
                     p.gate_threshold_db += gate_off;
                     p.comp_ratio = (p.comp_ratio * ratio_mul).max(1.5);
                     for b in &mut p.eq_bands {
                         b.gain_db *= eq_scale;
                     }
-                    p.denoise_mix = mix;
-                    candidates.push(p);
+                    p.voice_gate_enabled = voice.is_some();
+                    p.voice_gate_threshold = voice.unwrap_or(p.voice_gate_threshold);
+                    out.push(p);
                 }
             }
         }
     }
+    out
+}
+
+/// Lance tout le calibrage : analyse, proposition, puis tournoi des variantes.
+/// `progress` reçoit une valeur entre 0 et 1.
+pub fn run(rec: &Recording, mut progress: impl FnMut(f32)) -> CalibrationResult {
+    let analysis = analyze(&rec.silence, &rec.keyboard, &rec.speech);
+    let base = propose(&analysis);
+
+    // Enregistrement complet : silence, clavier puis voix, avec le masque « voix »
+    // d'origine (limité à la phase de lecture : un clic n'est pas de la voix).
+    let mut full = Vec::with_capacity(rec.silence.len() + rec.keyboard.len() + rec.speech.len());
+    full.extend_from_slice(&rec.silence);
+    full.extend_from_slice(&rec.keyboard);
+    full.extend_from_slice(&rec.speech);
+    let layout = Layout::of(rec);
+    let first_speech_frame = layout.speech_samples.start.div_ceil(FRAME);
+    let gate_level = analysis.noise_floor_db + 12.0;
+    let mask: Vec<bool> =
+        frame_rms_db(&full).iter().enumerate().map(|(i, &l)| i >= first_speech_frame && l > gate_level).collect();
+
+    let baseline = Params { bypass: true, input_gain_db: base.input_gain_db, ..Params::default() };
+    let baseline_score = score(&Chain::render(&baseline, &full).0, &mask, &layout);
+
+    let candidates = candidates(&base);
 
     // Le tournoi est réparti sur tous les cœurs du processeur.
     let total = candidates.len();
@@ -355,12 +534,12 @@ pub fn run(silence: &[f32], speech: &[f32], mut progress: impl FnMut(f32)) -> Ca
         let handles: Vec<_> = candidates
             .chunks(per)
             .map(|chunk| {
-                let (full, mask, done) = (&full, &mask, &done);
+                let (full, mask, layout, done) = (&full, &mask, &layout, &done);
                 scope.spawn(move || {
                     chunk
                         .iter()
                         .map(|p| {
-                            let r = evaluate(p.clone(), full, mask);
+                            let r = evaluate(p.clone(), full, mask, layout);
                             done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             r
                         })
@@ -382,13 +561,13 @@ pub fn run(silence: &[f32], speech: &[f32], mut progress: impl FnMut(f32)) -> Ca
     CalibrationResult { analysis, params, score, baseline_score, candidates_tested: total }
 }
 
-/// Ajuste le gain de sortie pour viser le bon volume, puis note le rendu.
-fn evaluate(mut p: Params, full: &[f32], mask: &[bool]) -> (Params, Score) {
+/// Ajuste le gain de sortie pour viser la bonne sonie, puis note le rendu.
+fn evaluate(mut p: Params, full: &[f32], mask: &[bool], layout: &Layout) -> (Params, Score) {
     let (out, _) = Chain::render(&p, full);
-    let speech: Vec<f32> = frame_rms_db(&out).iter().zip(mask).filter(|(_, m)| **m).map(|(l, _)| *l).collect();
-    p.output_gain_db = (TARGET_SPEECH_DB - percentile(&speech, 0.5)).clamp(-6.0, 6.0);
+    let lufs = integrated_lufs(out.get(layout.speech_samples.clone()).unwrap_or(&out));
+    p.output_gain_db = (TARGET_LUFS - lufs).clamp(-6.0, 6.0);
     let (out, _) = Chain::render(&p, full);
-    let s = score(&out, mask);
+    let s = score(&out, mask, layout);
     (p, s)
 }
 
@@ -418,6 +597,26 @@ pub fn synthetic_voice(secs: f32, noise_db: f32, voice_db: f32) -> (Vec<f32>, Ve
         })
         .collect();
     (silence, speech)
+}
+
+/// Frappe au clavier synthétique : un clic bref (5 ms de bruit qui décroît)
+/// toutes les 150 ms, au niveau de crête `keys_db`, sur le bruit de fond.
+pub fn synthetic_keyboard(len: usize, noise_db: f32, keys_db: f32) -> Vec<f32> {
+    let mut seed = 777u32;
+    let mut noise = || {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (seed as f32 / u32::MAX as f32) * 2.0 - 1.0
+    };
+    let (nl, kl) = (db_to_lin(noise_db) * 1.7, db_to_lin(keys_db));
+    let period = (0.15 * SAMPLE_RATE) as usize;
+    let click = (0.005 * SAMPLE_RATE) as usize;
+    (0..len)
+        .map(|i| {
+            let k = i % period;
+            let c = if k < click { noise() * kl * (1.0 - k as f32 / click as f32) } else { 0.0 };
+            c + noise() * nl
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -459,26 +658,35 @@ mod tests {
         assert!(none.iter().all(|&e| e == 0.0), "aucune trame retenue : spectre nul");
     }
 
+    /// Enregistrement synthétique complet : silence, clavier (si `keys_db`), voix.
+    fn recording(secs: f32, noise_db: f32, voice_db: f32, keys_db: Option<f32>) -> Recording {
+        let (silence, speech) = synthetic_voice(secs, noise_db, voice_db);
+        let keyboard = keys_db.map_or_else(|| silence.clone(), |k| synthetic_keyboard(silence.len(), noise_db, k));
+        Recording { silence, keyboard, speech }
+    }
+
     #[test]
     fn split_recording_drops_click_and_transition() {
         let rate = SAMPLE_RATE as usize;
-        let all: Vec<f32> = (0..rate * 20).map(|i| i as f32).collect();
-        let (sil, sp) = split_recording(&all);
-        assert_eq!(sil.len(), (SILENCE_SECS as usize - 1) * rate);
-        assert!((sil[0] - (rate / 2) as f32).abs() < f32::EPSILON);
-        assert!((sp[0] - (SILENCE_SECS as usize * rate) as f32).abs() < f32::EPSILON);
-        assert_eq!(sp.len(), all.len() - SILENCE_SECS as usize * rate);
+        let (s, k) = (SILENCE_SECS as usize, KEYBOARD_SECS as usize);
+        let all: Vec<f32> = (0..rate * 30).map(|i| i as f32).collect();
+        let r = split_recording(&all);
+        assert_eq!(r.silence.len(), (s - 1) * rate);
+        assert!((r.silence[0] - (rate / 2) as f32).abs() < f32::EPSILON);
+        assert_eq!(r.keyboard.len(), (k - 1) * rate);
+        assert!((r.keyboard[0] - (s * rate + rate / 2) as f32).abs() < f32::EPSILON);
+        assert!((r.speech[0] - ((s + k) * rate) as f32).abs() < f32::EPSILON);
+        assert_eq!(r.speech.len(), all.len() - (s + k) * rate);
         // Enregistrement trop court (bouton cliqué trop tôt) : pas de panique.
-        for n in [0, 10, rate, rate * 8] {
-            let (a, b) = split_recording(&all[..n]);
-            assert!(a.len() + b.len() <= n);
+        for n in [0, 10, rate, rate * 8, rate * 12] {
+            let r = split_recording(&all[..n]);
+            assert!(r.silence.len() + r.keyboard.len() + r.speech.len() <= n);
         }
     }
 
     #[test]
     fn check_rejects_inaudible_voice() {
-        let (sil, sp) = synthetic_voice(3.0, -60.0, -30.0);
-        let mut r = run(&sil, &sp, |_| {});
+        let mut r = run(&recording(3.0, -60.0, -30.0, None), |_| {});
         assert!(check(&r).is_ok());
         r.analysis.snr_db = MIN_SNR_DB - 1.0;
         assert!(check(&r).is_err());
@@ -487,9 +695,9 @@ mod tests {
     #[test]
     fn clipping_is_detected() {
         let (sil, _) = synthetic_voice(2.0, -60.0, -30.0);
-        let a = analyze(&sil, &tone(200.0, 1.5, 48_000).iter().map(|x| x.clamp(-1.0, 1.0)).collect::<Vec<_>>());
+        let a = analyze(&sil, &sil, &tone(200.0, 1.5, 48_000).iter().map(|x| x.clamp(-1.0, 1.0)).collect::<Vec<_>>());
         assert!(a.clipped());
-        let b = analyze(&sil, &tone(200.0, 0.3, 48_000));
+        let b = analyze(&sil, &sil, &tone(200.0, 0.3, 48_000));
         assert!(!b.clipped());
     }
 
@@ -536,22 +744,121 @@ mod tests {
                 })
                 .collect()
         };
-        let clean = score(&render(0.0001, 0.18), &mask);
-        let noisy = score(&render(0.05, 0.18), &mask);
+        let layout = Layout::default();
+        let clean = score(&render(0.0001, 0.18), &mask, &layout);
+        let noisy = score(&render(0.05, 0.18), &mask, &layout);
         assert!(clean.noise_reduction_db > noisy.noise_reduction_db);
         assert!(clean.total > noisy.total);
     }
 
     #[test]
+    fn score_penalises_keyboard_leaks() {
+        // 100 trames de « clavier » puis 200 trames de voix et de pauses.
+        let mask: Vec<bool> = (0..300).map(|i| i >= 100 && i % 3 != 0).collect();
+        let layout = Layout { keyboard_frames: 0..100, speech_samples: 100 * FRAME..300 * FRAME };
+        let render = |keys: f32| -> Vec<f32> {
+            (0..300)
+                .flat_map(|i| {
+                    let amp = if i < 100 {
+                        if i % 10 == 0 { keys } else { 0.0001 }
+                    } else if mask[i] {
+                        0.18
+                    } else {
+                        0.0001
+                    };
+                    tone(1000.0, amp, FRAME)
+                })
+                .collect()
+        };
+        let quiet = score(&render(0.0001), &mask, &layout);
+        let loud = score(&render(0.1), &mask, &layout);
+        assert!(quiet.keyboard_reduction_db > loud.keyboard_reduction_db + 30.0, "{quiet:?} / {loud:?}");
+        assert!(quiet.total > loud.total);
+        assert!(quiet.loudness_lufs > -40.0 && quiet.loudness_lufs < 0.0, "{}", quiet.loudness_lufs);
+    }
+
+    #[test]
+    fn hum_and_its_harmonics_are_found_in_the_silence() {
+        let (mut sil, _) = synthetic_voice(16.0, -60.0, -30.0);
+        for (i, x) in sil.iter_mut().enumerate() {
+            let t = i as f32 / SAMPLE_RATE;
+            *x += 0.01 * (2.0 * std::f32::consts::PI * 150.0 * t).sin()
+                + 0.005 * (2.0 * std::f32::consts::PI * 250.0 * t).sin();
+        }
+        let peaks = detect_tonal_noise(&sil);
+        assert_eq!(peaks.len(), 2, "{peaks:?}");
+        assert!((peaks[0].freq_hz - 150.0).abs() < 1.0, "{peaks:?}");
+        assert!((peaks[1].freq_hz - 250.0).abs() < 1.0, "{peaks:?}");
+        assert!(peaks[0].prominence_db > peaks[1].prominence_db);
+        let p = propose(&Analysis { tonal_noise: peaks, ..Analysis::default() });
+        assert!((p.notch_freqs_hz[0] - 150.0).abs() < 1.0 && p.notch_freqs_hz[2].abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn plain_noise_has_no_hum_and_short_silences_are_ignored() {
+        let (sil, _) = synthetic_voice(16.0, -60.0, -30.0);
+        assert_eq!(detect_tonal_noise(&sil), Vec::new());
+        assert_eq!(detect_tonal_noise(&sil[..1000]), Vec::new());
+        // Beaucoup de raies : on garde les plus marquées, dans la limite des filtres.
+        let mut many = sil.clone();
+        for (i, x) in many.iter_mut().enumerate() {
+            let t = i as f32 / SAMPLE_RATE;
+            *x += (1..=10)
+                .map(|h| 0.01 / h as f32 * (2.0 * std::f32::consts::PI * 100.0 * h as f32 * t).sin())
+                .sum::<f32>();
+        }
+        let peaks = detect_tonal_noise(&many);
+        assert_eq!(peaks.len(), MAX_NOTCHES);
+        assert!((peaks[0].freq_hz - 100.0).abs() < 1.0, "{peaks:?}");
+    }
+
+    #[test]
+    fn quiet_keys_raise_the_gate_and_loud_keys_need_the_voice_gate() {
+        let base = Analysis {
+            noise_floor_db: -70.0,
+            speech_level_db: -30.0,
+            speech_peak_db: -15.0,
+            speech_frame_peak_db: -22.0,
+            keyboard_level_db: -70.0,
+            keyboard_peak_db: -65.0,
+            ..Analysis::default()
+        };
+        let silent = propose(&base);
+        assert!(!silent.voice_gate_enabled, "clavier inaudible : pas de porte vocale");
+        let quiet_keys = propose(&Analysis { keyboard_level_db: -55.0, keyboard_peak_db: -38.0, ..base.clone() });
+        assert!(quiet_keys.voice_gate_enabled);
+        assert!(
+            quiet_keys.gate_threshold_db >= -38.0 + quiet_keys.input_gain_db + 2.0 - 0.01,
+            "porte au-dessus des touches : {} (gain {})",
+            quiet_keys.gate_threshold_db,
+            quiet_keys.input_gain_db
+        );
+        let loud_keys = propose(&Analysis { keyboard_level_db: -40.0, keyboard_peak_db: -20.0, ..base });
+        assert!(loud_keys.voice_gate_enabled);
+        assert!(loud_keys.gate_threshold_db < quiet_keys.gate_threshold_db, "la porte ne coupe pas la voix");
+    }
+
+    #[test]
+    fn keyboard_phase_is_measured_and_never_counted_as_voice() {
+        let rec = recording(4.0, -60.0, -30.0, Some(-20.0));
+        let a = analyze(&rec.silence, &rec.keyboard, &rec.speech);
+        assert!(a.keyboard_peak_db > a.noise_floor_db + 20.0, "{a:?}");
+        let r = run(&rec, |_| {});
+        assert!(r.score.keyboard_reduction_db < MAX_REDUCTION_DB);
+        assert!(r.score.words_cut_ratio < 0.2, "{:?}", r.score);
+    }
+
+    #[test]
     fn calibration_on_synthetic_voice_is_sane() {
-        let (sil, sp) = synthetic_voice(6.0, -60.0, -30.0);
-        let a = analyze(&sil, &sp);
+        let rec = recording(6.0, -60.0, -30.0, None);
+        let a = analyze(&rec.silence, &rec.keyboard, &rec.speech);
         assert!((a.noise_floor_db + 60.0).abs() < 3.0, "bruit {}", a.noise_floor_db);
         assert!(a.snr_db > 20.0);
-        let r = run(&sil, &sp, |_| {});
+        let r = run(&rec, |_| {});
         assert!(r.params.input_gain_db > 0.0, "voix faible : il faut monter le gain");
         assert!(r.params.gate_threshold_db > a.noise_floor_db + r.params.input_gain_db);
         assert!(r.score.words_cut_ratio < 0.1, "{:?}", r.score);
         assert!(r.score.total > r.baseline_score.total, "{:?} vs {:?}", r.score, r.baseline_score);
+        assert!(r.score.loudness_error_db < r.baseline_score.loudness_error_db + 1.0, "{:?}", r.score);
     }
 }

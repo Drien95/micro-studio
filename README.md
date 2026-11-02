@@ -27,11 +27,12 @@ Latence totale : environ 10 ms de traitement + 20 ms de tampon.
 
 ## Le calibrage automatique
 
-1. **8 s de silence** : mesure du bruit de fond (pièce + micro).
-2. **Lecture d'un texte** (15 à 40 s) : mesure du niveau, du timbre, des sifflantes et des variations de volume de ta voix.
-3. **Proposition** : réglages déduits des mesures (gain, seuil du gate, fréquence du de-esser, corrections d'EQ par rapport au spectre moyen de la parole, ratio du compresseur).
-4. **Tournoi** : 36 variantes sont rendues sur ton enregistrement et notées (réduction du bruit, régularité du volume, mots coupés, saturation, équilibre tonal). La meilleure gagne.
-5. **Écoute avant/après**, puis tu gardes ou tu annules.
+1. **8 s de silence** : mesure du bruit de fond (pièce + micro) et recherche des bourdonnements (secteur 50 Hz et harmoniques, sifflement USB).
+2. **8 s de frappe au clavier, sans parler** : mesure du bruit des touches et de la souris.
+3. **Lecture d'un texte** (15 à 40 s) : mesure du niveau, du timbre, des sifflantes et des variations de volume de ta voix.
+4. **Proposition** : réglages déduits des mesures (gain, coupe-bandes anti-bourdonnement, seuil du gate au-dessus des touches, porte vocale, fréquence du de-esser, corrections d'EQ par rapport au spectre moyen de la parole, ratio du compresseur).
+5. **Tournoi** : 54 variantes sont rendues sur ton enregistrement et notées (voix au-dessus du bruit et du clavier, sonie en LUFS selon UIT-R BS.1770 avec une cible de -18 LUFS, régularité du volume, mots coupés, saturation, équilibre tonal). La meilleure gagne et un rapport avant/après s'affiche.
+6. **Écoute avant/après**, puis tu gardes ou tu annules.
 
 ## Installation
 

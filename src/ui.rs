@@ -16,6 +16,7 @@ enum Calib {
     Idle,
     Intro,
     Silence(Instant),
+    Keyboard(Instant),
     Speech(Instant),
     Computing { rx: Receiver<CalibMsg>, progress: f32 },
     Done { result: Box<CalibrationResult>, previous: Params, listening_new: bool },
@@ -352,6 +353,20 @@ impl App {
             ui.add(egui::Slider::new(&mut p.hpf_hz, 40.0..=200.0).text("Fréquence").suffix(" Hz").logarithmic(true));
         });
 
+        section(ui, "Anti-bourdonnement", Some(&mut p.notch_enabled), |ui| {
+            ui.label(
+                RichText::new("Retire les « zzzz » continus (secteur électrique, USB). Le calibrage les repère.")
+                    .weak(),
+            );
+            let found: Vec<String> =
+                p.notch_freqs_hz.iter().filter(|&&f| f > 0.0).map(|f| format!("{f:.0} Hz")).collect();
+            if found.is_empty() {
+                ui.label("Aucun bourdonnement repéré.");
+            } else {
+                ui.label(format!("Filtré : {}", found.join(", ")));
+            }
+        });
+
         section(ui, "Noise gate", Some(&mut p.gate_enabled), |ui| {
             ui.label(RichText::new("Coupe le micro quand tu ne parles pas.").weak());
             ui.add(egui::Slider::new(&mut p.gate_threshold_db, -80.0..=-10.0).text("Seuil").suffix(" dB"))
@@ -364,6 +379,17 @@ impl App {
         section(ui, "Suppression de bruit (IA)", Some(&mut p.denoise_enabled), |ui| {
             ui.label(RichText::new("Un réseau de neurones (RNNoise) retire ventilateur, clavier, souffle.").weak());
             ui.add(egui::Slider::new(&mut p.denoise_mix, 0.0..=1.0).text("Intensité"));
+            ui.checkbox(&mut p.voice_gate_enabled, "Couper tout ce qui n'est pas de la voix (clavier, souris)")
+                .on_hover_text(
+                    "Le réseau de neurones ferme le micro quand il n'entend pas de voix, même si le bruit est fort.",
+                );
+            ui.add_enabled(
+                p.voice_gate_enabled,
+                egui::Slider::new(&mut p.voice_gate_threshold, 0.1..=0.9).text("Exigence"),
+            )
+            .on_hover_text(
+                "Plus c'est haut, plus il faut être sûr que c'est de la voix. Trop haut : des mots sont coupés.",
+            );
         });
 
         section(ui, "De-esser", Some(&mut p.deesser_enabled), |ui| {
@@ -440,8 +466,9 @@ impl App {
                 Calib::Intro => {
                     ui.label("Le logiciel va écouter ton micro pendant environ une minute pour trouver les meilleurs réglages :");
                     ui.label(format!("1. {} secondes de silence total, pour mesurer le bruit de ta pièce et de ton micro.", calibrate::SILENCE_SECS as u32));
-                    ui.label("2. La lecture d'un court texte, à ta voix normale et à ta distance habituelle du micro.");
-                    ui.label("3. Un tournoi entre une vingtaine de réglages possibles ; le meilleur gagne.");
+                    ui.label(format!("2. {} secondes à taper au clavier sans parler, pour apprendre à couper les touches.", calibrate::KEYBOARD_SECS as u32));
+                    ui.label("3. La lecture d'un court texte, à ta voix normale et à ta distance habituelle du micro.");
+                    ui.label("4. Un tournoi entre une cinquantaine de réglages possibles ; le meilleur gagne.");
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if ui.button(RichText::new("C'est parti").strong()).clicked() {
@@ -459,6 +486,15 @@ impl App {
                     ui.label("Ne parle pas et ne touche pas au clavier.");
                     ui.add(egui::ProgressBar::new(t / calibrate::SILENCE_SECS).show_percentage());
                     if t >= calibrate::SILENCE_SECS {
+                        next = Some(Calib::Keyboard(Instant::now()));
+                    }
+                }
+                Calib::Keyboard(start) => {
+                    let t = start.elapsed().as_secs_f32();
+                    ui.heading("Tape au clavier, sans parler");
+                    ui.label("Écris n'importe quoi, comme pendant une partie ou une discussion. Clique aussi avec la souris.");
+                    ui.add(egui::ProgressBar::new(t / calibrate::KEYBOARD_SECS).show_percentage());
+                    if t >= calibrate::KEYBOARD_SECS {
                         next = Some(Calib::Speech(Instant::now()));
                     }
                 }
@@ -471,11 +507,11 @@ impl App {
                     ui.add(egui::ProgressBar::new(t / calibrate::SPEECH_SECS).text(format!("{t:.0} s")));
                     let done = t >= calibrate::SPEECH_SECS || (t > 15.0 && ui.button("J'ai fini de lire").clicked());
                     if done {
-                        let (silence, speech) = calibrate::split_recording(&self.shared.stop_recording());
+                        let recording = calibrate::split_recording(&self.shared.stop_recording());
                         let (tx, rx) = channel();
                         std::thread::spawn(move || {
                             let tx2 = tx.clone();
-                            let r = calibrate::run(&silence, &speech, move |p| {
+                            let r = calibrate::run(&recording, move |p| {
                                 let _ = tx2.send(CalibMsg::Progress(p));
                             });
                             let _ = tx.send(CalibMsg::Done(Box::new(r)));
@@ -509,14 +545,13 @@ impl App {
                     if a.clipped() {
                         ui.label(RichText::new("Ton micro a saturé pendant la lecture : baisse son volume dans Windows (Paramètres > Son) puis relance le calibrage.").color(Color32::from_rgb(220, 160, 40)));
                     }
+                    if !a.tonal_noise.is_empty() {
+                        let freqs: Vec<String> = a.tonal_noise.iter().map(|t| format!("{:.0} Hz", t.freq_hz)).collect();
+                        ui.label(format!("Bourdonnement repéré et filtré : {}.", freqs.join(", ")));
+                    }
                     ui.add_space(6.0);
-                    ui.label(format!(
-                        "{} réglages testés. Bruit réduit de {:.0} dB (contre {:.0} dB sans traitement), volume régulier à ±{:.0} dB.",
-                        result.candidates_tested,
-                        result.score.noise_reduction_db,
-                        result.baseline_score.noise_reduction_db,
-                        result.score.level_spread_db / 2.0
-                    ));
+                    ui.label(format!("{} réglages testés. Avant / après :", result.candidates_tested));
+                    report_grid(ui, &result.baseline_score, &result.score);
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         ui.label("Écouter :");
@@ -562,6 +597,36 @@ impl App {
             self.calib = n;
         }
     }
+}
+
+/// Tableau « sans traitement / avec tes réglages » du rapport de calibrage.
+fn report_grid(ui: &mut egui::Ui, before: &calibrate::Score, after: &calibrate::Score) {
+    egui::Grid::new("rapport_calibrage").striped(true).num_columns(3).show(ui, |ui| {
+        ui.label("");
+        ui.label(RichText::new("Sans traitement").strong());
+        ui.label(RichText::new("Avec tes réglages").strong());
+        ui.end_row();
+        for (label, f) in report_rows() {
+            ui.label(label);
+            ui.label(f(before));
+            ui.label(f(after));
+            ui.end_row();
+        }
+    });
+}
+
+type ReportRow = (&'static str, fn(&calibrate::Score) -> String);
+
+/// Lignes du rapport : libellé et mise en forme de la mesure.
+fn report_rows() -> [ReportRow; 6] {
+    [
+        ("Voix au-dessus du bruit de fond", |s| format!("{:.0} dB", s.noise_reduction_db)),
+        ("Voix au-dessus du clavier", |s| format!("{:.0} dB", s.keyboard_reduction_db)),
+        ("Volume (cible -18 LUFS)", |s| format!("{:.1} LUFS", s.loudness_lufs)),
+        ("Régularité du volume", |s| format!("±{:.0} dB", s.level_spread_db / 2.0)),
+        ("Mots coupés", |s| format!("{:.0} %", s.words_cut_ratio * 100.0)),
+        ("Équilibre de la voix (écart)", |s| format!("{:.1} dB", s.tonal_error_db)),
+    ]
 }
 
 fn meter_row(ui: &mut egui::Ui, label: &str, db: f32) {

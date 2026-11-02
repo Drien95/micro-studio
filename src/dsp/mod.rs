@@ -1,17 +1,19 @@
 //! La chaîne de traitement complète, dans l'ordre utilisé par les ingés son :
-//! gain → passe-haut → noise gate → débruitage → de-esser → EQ → compresseur → limiteur.
+//! gain → passe-haut → coupe-bandes → noise gate → débruitage → porte vocale →
+//! de-esser → EQ → compresseur → limiteur.
 
 pub mod biquad;
 pub mod denoise;
 pub mod dynamics;
+pub mod loudness;
 pub mod resample;
 pub mod util;
 
-use crate::params::{EqKind, Params};
+use crate::params::{EqKind, MAX_NOTCHES, Params};
 use biquad::Biquad;
 use denoise::Denoiser;
 pub use denoise::FRAME;
-use dynamics::{Compressor, DeEsser, Gate, Limiter};
+use dynamics::{Compressor, DeEsser, Gate, Limiter, VoiceGate};
 use util::{db_to_lin, lin_to_db};
 
 /// Mesures d'une trame, pour les vumètres et le calibrage.
@@ -21,6 +23,7 @@ pub struct FrameStats {
     pub out_peak_db: f32,
     pub gate_open: bool,
     pub gate_gain_db: f32,
+    pub voice_gate_open: bool,
     pub comp_gr_db: f32,
     pub deess_gr_db: f32,
     pub vad: f32,
@@ -31,8 +34,10 @@ pub struct FrameStats {
 pub struct Chain {
     params: Params,
     hpf: [Biquad; 2],
+    notches: [Biquad; MAX_NOTCHES],
     gate: Gate,
     denoiser: Denoiser,
+    voice_gate: VoiceGate,
     deesser: DeEsser,
     eq: [Biquad; 4],
     comp: Compressor,
@@ -44,8 +49,10 @@ impl Chain {
         let mut c = Self {
             params: params.clone(),
             hpf: [Biquad::default(); 2],
+            notches: [Biquad::default(); MAX_NOTCHES],
             gate: Gate::default(),
             denoiser: Denoiser::default(),
+            voice_gate: VoiceGate::default(),
             deesser: DeEsser::default(),
             eq: [Biquad::default(); 4],
             comp: Compressor::default(),
@@ -60,6 +67,19 @@ impl Chain {
         // Deux biquads en série : pente de 24 dB/octave (Butterworth d'ordre 4).
         self.hpf[0].set_highpass(p.hpf_hz, 0.5412);
         self.hpf[1].set_highpass(p.hpf_hz, 1.3066);
+        for (f, &hz) in self.notches.iter_mut().zip(p.notch_freqs_hz.iter()) {
+            if hz > 0.0 {
+                f.set_notch(hz, hz / p.notch_width_hz.max(0.5));
+            } else {
+                *f = Biquad::default();
+            }
+        }
+        self.voice_gate.configure(
+            p.voice_gate_threshold,
+            p.voice_gate_confirm_ms,
+            p.voice_gate_hold_ms,
+            p.voice_gate_range_db,
+        );
         self.gate.configure(p.gate_threshold_db, p.gate_attack_ms, p.gate_hold_ms, p.gate_release_ms, p.gate_range_db);
         self.deesser.configure(p.deesser_freq_hz, p.deesser_threshold_db, p.deesser_max_reduction_db);
         for (f, b) in self.eq.iter_mut().zip(p.eq_bands.iter()) {
@@ -113,6 +133,11 @@ impl Chain {
                 let h = self.hpf[0].process(s);
                 s = self.hpf[1].process(h);
             }
+            if p.notch_enabled {
+                for f in &mut self.notches {
+                    s = f.process(s);
+                }
+            }
             if p.gate_enabled {
                 s = self.gate.process(s);
                 min_gate = min_gate.min(self.gate.gain());
@@ -125,7 +150,12 @@ impl Chain {
         if p.denoise_enabled {
             self.denoiser.process(frame, p.denoise_mix);
             st.vad = self.denoiser.vad();
+            // La porte vocale a besoin de la détection de voix du débruiteur.
+            if p.voice_gate_enabled {
+                self.voice_gate.process(frame, st.vad);
+            }
         }
+        st.voice_gate_open = !(p.denoise_enabled && p.voice_gate_enabled) || self.voice_gate.is_open();
 
         let mut max_gr = 0f32;
         let mut max_dgr = 0f32;
@@ -289,6 +319,42 @@ mod tests {
         let c = corr / (ew.sqrt() * ed.sqrt()).max(1e-9);
         assert!(c > 0.8, "corrélation sec/traité = {c}");
         assert!(rms_db(&out[24000..]) > rms_db(&x) - 6.0);
+    }
+
+    #[test]
+    fn notches_remove_the_hum_but_keep_the_rest() {
+        let mut x = sine(150.0, 0.1, 1.0);
+        let voice = sine(1000.0, 0.1, 1.0);
+        let p = only(|p| p.notch_freqs_hz[0] = 150.0);
+        let hum = Chain::render(&p, &x).0;
+        assert!(rms_db(&hum[24000..]) < rms_db(&x) - 25.0, "{}", rms_db(&hum[24000..]));
+        let kept = Chain::render(&p, &voice).0;
+        assert!((rms_db(&kept[24000..]) - rms_db(&voice)).abs() < 0.5);
+        // Désactivé : le bourdonnement passe.
+        x = Chain::render(&Params { notch_enabled: false, ..p }, &x).0;
+        assert!((rms_db(&x[24000..]) - rms_db(&sine(150.0, 0.1, 1.0))).abs() < 0.5);
+    }
+
+    #[test]
+    fn voice_gate_mutes_noise_that_is_not_voice() {
+        // Clics de clavier : RNNoise n'y entend pas de voix, la porte vocale se ferme.
+        let x = crate::calibrate::synthetic_keyboard(48_000, -70.0, -10.0);
+        let without = only(|p| p.denoise_enabled = true);
+        let with = only(|p| {
+            p.denoise_enabled = true;
+            p.voice_gate_enabled = true;
+            p.voice_gate_threshold = 0.7;
+            p.voice_gate_range_db = -40.0;
+        });
+        let (open, _) = Chain::render(&without, &x);
+        let (gated, stats) = Chain::render(&with, &x);
+        let (g, o) = (rms_db(&gated[24000..]), rms_db(&open[24000..]));
+        assert!(g < o - 20.0, "{g} / {o}");
+        assert!(!stats.last().is_some_and(|s| s.voice_gate_open));
+        assert!(
+            Chain::render(&without, &x).1.iter().all(|s| s.voice_gate_open),
+            "porte vocale coupée : toujours ouverte"
+        );
     }
 
     #[test]

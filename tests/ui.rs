@@ -385,3 +385,23 @@ fn listen_to_myself_without_the_cable_explains_why() {
     assert!(calls.lock().expect("verrou").is_empty());
     h.get_by_label_contains("CABLE Output) est introuvable");
 }
+
+#[test]
+fn hum_filters_found_by_the_calibration_are_listed() {
+    let (h, _) = app(calibrated(), true, false);
+    h.get_by_label_contains("Aucun bourdonnement repéré.");
+    let mut settings = calibrated();
+    settings.params.notch_freqs_hz[0] = 50.0;
+    settings.params.notch_freqs_hz[1] = 150.0;
+    let (h, _) = app(settings, true, false);
+    h.get_by_label_contains("Filtré : 50 Hz, 150 Hz");
+}
+
+#[test]
+fn the_voice_gate_can_be_switched_on_by_hand() {
+    let (mut h, _) = app(calibrated(), true, false);
+    assert!(!h.state().settings().params.voice_gate_enabled);
+    h.get_by_label_contains("Couper tout ce qui n'est pas de la voix").click();
+    h.run_steps(2);
+    assert!(h.state().settings().params.voice_gate_enabled);
+}
