@@ -1,11 +1,8 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-mod calibrate;
-mod dsp;
-mod engine;
-mod params;
-mod settings;
-mod ui;
+//! Point d'entrée : ouvre la fenêtre de Micro Studio.
+
+use micro_studio::ui;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {

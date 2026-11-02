@@ -1,12 +1,12 @@
 //! Noise gate, compresseur, de-esser et limiteur.
 
 use super::biquad::Biquad;
-use super::util::{db_to_lin, lin_to_db, time_coef, SAMPLE_RATE};
+use super::util::{SAMPLE_RATE, db_to_lin, lin_to_db, time_coef};
 
 // ---------------------------------------------------------------------------
 // Noise gate avec hystérésis et temps de maintien.
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Gate {
     env: f32,
     gain: f32,
@@ -70,7 +70,7 @@ impl Gate {
 // ---------------------------------------------------------------------------
 // Compresseur feed-forward à genou progressif.
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Compressor {
     env_db: f32,
     threshold_db: f32,
@@ -83,7 +83,15 @@ pub struct Compressor {
 }
 
 impl Compressor {
-    pub fn configure(&mut self, threshold_db: f32, ratio: f32, attack_ms: f32, release_ms: f32, knee_db: f32, makeup_db: f32) {
+    pub fn configure(
+        &mut self,
+        threshold_db: f32,
+        ratio: f32,
+        attack_ms: f32,
+        release_ms: f32,
+        knee_db: f32,
+        makeup_db: f32,
+    ) {
         self.threshold_db = threshold_db;
         self.ratio = ratio.max(1.0);
         self.knee_db = knee_db.max(0.0);
@@ -126,7 +134,7 @@ impl Compressor {
 // ---------------------------------------------------------------------------
 // De-esser à bande séparée : seuls les aigus au-dessus de la fréquence sont atténués.
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct DeEsser {
     detector: Biquad,
     splitter: Biquad,
@@ -154,11 +162,7 @@ impl DeEsser {
         let coef = if s > self.env { self.attack } else { self.release };
         self.env = s + (self.env - s) * coef;
 
-        let gain = if self.env > self.threshold {
-            (self.threshold / self.env).max(self.max_reduction)
-        } else {
-            1.0
-        };
+        let gain = if self.env > self.threshold { (self.threshold / self.env).max(self.max_reduction) } else { 1.0 };
         self.last_gr_db = lin_to_db(gain);
         let high = self.splitter.process(x);
         // x = graves + aigus ; on n'atténue que la part aiguë.
@@ -173,6 +177,7 @@ impl DeEsser {
 // ---------------------------------------------------------------------------
 // Limiteur avec anticipation de 1,5 ms : aucun échantillon ne dépasse le plafond.
 
+#[derive(Debug)]
 pub struct Limiter {
     ceiling: f32,
     delay: Vec<f32>,

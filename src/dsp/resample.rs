@@ -1,6 +1,7 @@
 //! Rééchantillonneur cubique (Catmull-Rom) en flux continu, pour passer de la
 //! fréquence du périphérique à 48 kHz et inversement. Suffisant pour la voix.
 
+#[derive(Debug, Clone)]
 pub struct Resampler {
     step: f64,
     phase: f64,
@@ -9,7 +10,7 @@ pub struct Resampler {
 
 impl Resampler {
     pub fn new(from_hz: u32, to_hz: u32) -> Self {
-        Self { step: from_hz as f64 / to_hz as f64, phase: 0.0, hist: [0.0; 4] }
+        Self { step: f64::from(from_hz) / f64::from(to_hz), phase: 0.0, hist: [0.0; 4] }
     }
 
     pub fn is_passthrough(&self) -> bool {

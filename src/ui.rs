@@ -1,12 +1,12 @@
 //! Interface graphique (egui).
 
 use crate::calibrate::{self, CalibrationResult};
-use crate::engine::{self, DeviceLists, Engine, Shared, INTERNAL_RATE};
-use crate::params::{builtin_presets, EqKind, Params};
+use crate::engine::{self, DeviceLists, Engine, INTERNAL_RATE, Shared};
+use crate::params::{EqKind, Params, builtin_presets};
 use crate::settings::Settings;
 use eframe::egui::{self, Color32, RichText};
-use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
 enum Calib {
@@ -24,6 +24,7 @@ enum CalibMsg {
     Done(Box<CalibrationResult>),
 }
 
+/// Application egui : fenêtre principale et assistant de calibrage.
 pub struct App {
     settings: Settings,
     shared: Arc<Shared>,
@@ -34,6 +35,12 @@ pub struct App {
     held_in: f32,
     held_out: f32,
     last_save: Option<Instant>,
+}
+
+impl std::fmt::Debug for App {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("App").field("engine", &self.engine).field("error", &self.error).finish_non_exhaustive()
+    }
 }
 
 impl App {
@@ -61,12 +68,8 @@ impl App {
 
     fn start_engine(&mut self) {
         self.engine = None;
-        let out = self
-            .settings
-            .output_device
-            .clone()
-            .or_else(|| engine::find_virtual_cable(&self.devices.outputs));
-        match engine::start(self.shared.clone(), self.settings.input_device.as_deref(), out.as_deref()) {
+        let out = self.settings.output_device.clone().or_else(|| engine::find_virtual_cable(&self.devices.outputs));
+        match engine::start(&self.shared, self.settings.input_device.as_deref(), out.as_deref()) {
             Ok(e) => {
                 self.settings.input_device = Some(e.input_name.clone());
                 self.settings.output_device = Some(e.output_name.clone());
@@ -149,7 +152,10 @@ impl App {
 
         if engine::find_virtual_cable(&self.devices.outputs).is_none() {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("VB-Cable n'est pas installé : c'est lui qui crée le micro virtuel.").color(Color32::from_rgb(220, 160, 40)));
+                ui.label(
+                    RichText::new("VB-Cable n'est pas installé : c'est lui qui crée le micro virtuel.")
+                        .color(Color32::from_rgb(220, 160, 40)),
+                );
                 ui.hyperlink_to("Télécharger VB-Cable (gratuit)", "https://vb-audio.com/Cable/");
             });
         }
@@ -172,7 +178,11 @@ impl App {
             ui.label("Activité");
             ui.horizontal(|ui| {
                 let open = m.gate_open.load(std::sync::atomic::Ordering::Relaxed);
-                ui.label(if open { RichText::new("Porte ouverte").color(Color32::from_rgb(60, 180, 90)) } else { RichText::new("Porte fermée").weak() });
+                ui.label(if open {
+                    RichText::new("Porte ouverte").color(Color32::from_rgb(60, 180, 90))
+                } else {
+                    RichText::new("Porte fermée").weak()
+                });
                 ui.separator();
                 ui.label(format!("Voix détectée : {:.0} %", m.vad.load() * 100.0));
                 ui.separator();
@@ -189,7 +199,9 @@ impl App {
             let enabled = self.engine.is_some() && matches!(self.calib, Calib::Idle);
             if ui
                 .add_enabled(enabled, egui::Button::new(RichText::new("🎯 Calibrage automatique").strong()))
-                .on_hover_text("Mesure ton micro, ta pièce et ta voix, puis trouve les meilleurs réglages (environ 1 minute)")
+                .on_hover_text(
+                    "Mesure ton micro, ta pièce et ta voix, puis trouve les meilleurs réglages (environ 1 minute)",
+                )
                 .clicked()
             {
                 self.calib = Calib::Intro;
@@ -240,7 +252,10 @@ impl App {
         });
 
         section(ui, "Filtre passe-haut", Some(&mut p.hpf_enabled), |ui| {
-            ui.label(RichText::new("Coupe les graves inutiles : vibrations du bureau, souffle, « boum » des p et des b.").weak());
+            ui.label(
+                RichText::new("Coupe les graves inutiles : vibrations du bureau, souffle, « boum » des p et des b.")
+                    .weak(),
+            );
             ui.add(egui::Slider::new(&mut p.hpf_hz, 40.0..=200.0).text("Fréquence").suffix(" Hz").logarithmic(true));
         });
 
@@ -260,7 +275,12 @@ impl App {
 
         section(ui, "De-esser", Some(&mut p.deesser_enabled), |ui| {
             ui.label(RichText::new("Adoucit les « s » et « ch » trop sifflants.").weak());
-            ui.add(egui::Slider::new(&mut p.deesser_freq_hz, 3000.0..=10000.0).text("Fréquence").suffix(" Hz").logarithmic(true));
+            ui.add(
+                egui::Slider::new(&mut p.deesser_freq_hz, 3000.0..=10000.0)
+                    .text("Fréquence")
+                    .suffix(" Hz")
+                    .logarithmic(true),
+            );
             ui.add(egui::Slider::new(&mut p.deesser_threshold_db, -60.0..=0.0).text("Seuil").suffix(" dB"));
             ui.add(egui::Slider::new(&mut p.deesser_max_reduction_db, 0.0..=12.0).text("Réduction max").suffix(" dB"));
         });
@@ -284,8 +304,15 @@ impl App {
             ui.label(RichText::new("Rend le volume régulier : les passages faibles et forts se rapprochent.").weak());
             ui.add(egui::Slider::new(&mut p.comp_threshold_db, -50.0..=0.0).text("Seuil").suffix(" dB"));
             ui.add(egui::Slider::new(&mut p.comp_ratio, 1.0..=20.0).text("Ratio").suffix(":1").logarithmic(true));
-            ui.add(egui::Slider::new(&mut p.comp_attack_ms, 0.1..=100.0).text("Attaque").suffix(" ms").logarithmic(true));
-            ui.add(egui::Slider::new(&mut p.comp_release_ms, 10.0..=1000.0).text("Relâchement").suffix(" ms").logarithmic(true));
+            ui.add(
+                egui::Slider::new(&mut p.comp_attack_ms, 0.1..=100.0).text("Attaque").suffix(" ms").logarithmic(true),
+            );
+            ui.add(
+                egui::Slider::new(&mut p.comp_release_ms, 10.0..=1000.0)
+                    .text("Relâchement")
+                    .suffix(" ms")
+                    .logarithmic(true),
+            );
             ui.add(egui::Slider::new(&mut p.comp_knee_db, 0.0..=12.0).text("Genou").suffix(" dB"));
             ui.add(egui::Slider::new(&mut p.comp_makeup_db, 0.0..=24.0).text("Gain de rattrapage").suffix(" dB"));
         });
@@ -300,6 +327,7 @@ impl App {
         }
     }
 
+    #[expect(clippy::too_many_lines, reason = "machine à états de l'assistant, à découper avec la refonte de l'UI")]
     fn calibration_window(&mut self, ctx: &egui::Context) {
         if matches!(self.calib, Calib::Idle) {
             return;
@@ -345,7 +373,7 @@ impl App {
                     ui.add_space(4.0);
                     ui.label(RichText::new(calibrate::READING_TEXT).size(16.0));
                     ui.add_space(8.0);
-                    ui.add(egui::ProgressBar::new(t / calibrate::SPEECH_SECS).text(format!("{:.0} s", t)));
+                    ui.add(egui::ProgressBar::new(t / calibrate::SPEECH_SECS).text(format!("{t:.0} s")));
                     let done = t >= calibrate::SPEECH_SECS || (t > 15.0 && ui.button("J'ai fini de lire").clicked());
                     if done {
                         let all = self.shared.stop_recording();
@@ -460,25 +488,21 @@ fn meter_row(ui: &mut egui::Ui, label: &str, db: f32) {
     } else {
         Color32::from_rgb(60, 180, 90)
     };
-    ui.add(
-        egui::ProgressBar::new(frac)
-            .fill(color)
-            .desired_width(420.0)
-            .text(if db < -59.0 { "—".to_string() } else { format!("{db:.0} dB") }),
-    );
+    ui.add(egui::ProgressBar::new(frac).fill(color).desired_width(420.0).text(if db < -59.0 {
+        "—".to_string()
+    } else {
+        format!("{db:.0} dB")
+    }));
 }
 
 fn section(ui: &mut egui::Ui, title: &str, enabled: Option<&mut bool>, body: impl FnOnce(&mut egui::Ui)) {
     ui.group(|ui| {
-        let on = match enabled {
-            Some(e) => {
-                ui.checkbox(e, RichText::new(title).strong());
-                *e
-            }
-            None => {
-                ui.label(RichText::new(title).strong());
-                true
-            }
+        let on = if let Some(e) = enabled {
+            ui.checkbox(e, RichText::new(title).strong());
+            *e
+        } else {
+            ui.label(RichText::new(title).strong());
+            true
         };
         ui.add_enabled_ui(on, body);
     });
@@ -503,11 +527,11 @@ impl eframe::App for App {
         });
         self.calibration_window(&ctx);
 
-        if let Some(t) = self.last_save {
-            if t.elapsed() > Duration::from_millis(800) {
-                self.settings.save();
-                self.last_save = None;
-            }
+        if let Some(t) = self.last_save
+            && t.elapsed() > Duration::from_millis(800)
+        {
+            self.settings.save();
+            self.last_save = None;
         }
         ctx.request_repaint_after(Duration::from_millis(33));
     }

@@ -13,9 +13,5 @@ pub fn lin_to_db(x: f32) -> f32 {
 /// Coefficient de lissage exponentiel pour une constante de temps en ms.
 #[inline]
 pub fn time_coef(ms: f32) -> f32 {
-    if ms <= 0.0 {
-        0.0
-    } else {
-        (-1.0 / (ms * 0.001 * SAMPLE_RATE)).exp()
-    }
+    if ms <= 0.0 { 0.0 } else { (-1.0 / (ms * 0.001 * SAMPLE_RATE)).exp() }
 }

@@ -3,12 +3,10 @@
 //! propose des réglages, puis organise un tournoi entre variantes pour garder
 //! celle qui obtient le meilleur score.
 
-#[cfg(test)]
-use crate::dsp::util::db_to_lin;
-use crate::dsp::util::{lin_to_db, SAMPLE_RATE};
+use crate::dsp::util::{SAMPLE_RATE, db_to_lin, lin_to_db};
 use crate::dsp::{Chain, FRAME};
 use crate::params::Params;
-use rustfft::{num_complex::Complex, FftPlanner};
+use rustfft::{FftPlanner, num_complex::Complex};
 
 pub const SILENCE_SECS: f32 = 8.0;
 pub const SPEECH_SECS: f32 = 40.0;
@@ -72,7 +70,7 @@ fn percentile(v: &[f32], p: f32) -> f32 {
         return -120.0;
     }
     let mut s = v.to_vec();
-    s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    s.sort_by(f32::total_cmp);
     let idx = ((s.len() - 1) as f32 * p.clamp(0.0, 1.0)).round() as usize;
     s[idx]
 }
@@ -82,9 +80,8 @@ fn average_spectrum(x: &[f32], keep: impl Fn(usize) -> bool) -> Vec<f32> {
     const N: usize = 2048;
     let mut planner = FftPlanner::<f32>::new();
     let fft = planner.plan_fft_forward(N);
-    let window: Vec<f32> = (0..N)
-        .map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / N as f32).cos())
-        .collect();
+    let window: Vec<f32> =
+        (0..N).map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / N as f32).cos()).collect();
     let mut acc = vec![0f32; N / 2];
     let mut count = 0;
     let mut start = 0;
@@ -103,7 +100,7 @@ fn average_spectrum(x: &[f32], keep: impl Fn(usize) -> bool) -> Vec<f32> {
         start += N / 2;
     }
     if count > 0 {
-        for a in acc.iter_mut() {
+        for a in &mut acc {
             *a /= count as f32;
         }
     }
@@ -158,12 +155,8 @@ pub fn analyze(silence: &[f32], speech: &[f32]) -> Analysis {
     let sib_freq = peak_freq(&sp_spec, 4500.0, 9000.0).clamp(4500.0, 9000.0);
     bp.set_bandpass(sib_freq, 1.4);
     let filtered: Vec<f32> = speech.iter().map(|&s| bp.process(s)).collect();
-    let sib_levels: Vec<f32> = frame_rms_db(&filtered)
-        .into_iter()
-        .zip(&active)
-        .filter(|(_, a)| **a)
-        .map(|(l, _)| l)
-        .collect();
+    let sib_levels: Vec<f32> =
+        frame_rms_db(&filtered).into_iter().zip(&active).filter(|(_, a)| **a).map(|(l, _)| l).collect();
 
     Analysis {
         noise_floor_db: noise_floor,
@@ -275,6 +268,8 @@ pub fn score(output: &[f32], speech_mask: &[bool]) -> Score {
     }
 }
 
+/// Résultat complet d'un calibrage.
+#[derive(Clone, Debug)]
 pub struct CalibrationResult {
     pub analysis: Analysis,
     pub params: Params,
@@ -307,7 +302,7 @@ pub fn run(silence: &[f32], speech: &[f32], mut progress: impl FnMut(f32)) -> Ca
                     let mut p = base.clone();
                     p.gate_threshold_db += gate_off;
                     p.comp_ratio = (p.comp_ratio * ratio_mul).max(1.5);
-                    for b in p.eq_bands.iter_mut() {
+                    for b in &mut p.eq_bands {
                         b.gain_db *= eq_scale;
                     }
                     p.denoise_mix = mix;
@@ -320,7 +315,7 @@ pub fn run(silence: &[f32], speech: &[f32], mut progress: impl FnMut(f32)) -> Ca
     // Le tournoi est réparti sur tous les cœurs du processeur.
     let total = candidates.len();
     let done = std::sync::atomic::AtomicUsize::new(0);
-    let workers = std::thread::available_parallelism().map_or(2, |n| n.get()).min(total);
+    let workers = std::thread::available_parallelism().map_or(2, std::num::NonZero::get).min(total);
     let per = total.div_ceil(workers);
     let mut results: Vec<(Params, Score)> = Vec::with_capacity(total);
     std::thread::scope(|scope| {
@@ -349,7 +344,7 @@ pub fn run(silence: &[f32], speech: &[f32], mut progress: impl FnMut(f32)) -> Ca
         }
     });
     progress(1.0);
-    let best = results.into_iter().max_by(|a, b| a.1.total.partial_cmp(&b.1.total).unwrap());
+    let best = results.into_iter().max_by(|a, b| a.1.total.total_cmp(&b.1.total));
     let (params, score) = best.expect("au moins un candidat");
     CalibrationResult { analysis, params, score, baseline_score, candidates_tested: total }
 }
@@ -365,12 +360,15 @@ fn evaluate(mut p: Params, full: &[f32], mask: &[bool]) -> (Params, Score) {
 }
 
 /// Signal de test synthétique (voix simulée + bruit), utilisé par les tests.
-#[cfg(test)]
+///
+/// Renvoie `(silence, voix)` : un quart de la durée de bruit seul, puis `secs`
+/// secondes de syllabes harmoniques (200 ms de son, 100 ms de pause) sur ce bruit.
+/// Déterministe (générateur congruentiel à graine fixe).
 pub fn synthetic_voice(secs: f32, noise_db: f32, voice_db: f32) -> (Vec<f32>, Vec<f32>) {
     let n = (secs * SAMPLE_RATE) as usize;
     let mut seed = 12345u32;
     let mut noise = || {
-        seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         (seed as f32 / u32::MAX as f32) * 2.0 - 1.0
     };
     let nl = db_to_lin(noise_db) * 1.7;

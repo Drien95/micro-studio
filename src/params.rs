@@ -119,22 +119,16 @@ pub fn builtin_presets() -> Vec<(&'static str, Params)> {
     radio.comp_threshold_db = -24.0;
     radio.comp_makeup_db = 7.0;
 
-    let mut stream = Params::default();
-    stream.gate_range_db = -60.0;
-    stream.comp_ratio = 3.5;
-    stream.comp_makeup_db = 5.0;
+    let stream = Params { gate_range_db: -60.0, comp_ratio: 3.5, comp_makeup_db: 5.0, ..Params::default() };
 
-    let mut light = Params::default();
-    light.deesser_enabled = false;
-    light.denoise_mix = 0.7;
-    light.eq_enabled = false;
-    light.comp_ratio = 2.5;
-    light.comp_makeup_db = 2.0;
+    let light = Params {
+        deesser_enabled: false,
+        denoise_mix: 0.7,
+        eq_enabled: false,
+        comp_ratio: 2.5,
+        comp_makeup_db: 2.0,
+        ..Params::default()
+    };
 
-    vec![
-        ("Voix naturelle", natural),
-        ("Voix radio", radio),
-        ("Stream / jeu", stream),
-        ("Traitement léger", light),
-    ]
+    vec![("Voix naturelle", natural), ("Voix radio", radio), ("Stream / jeu", stream), ("Traitement léger", light)]
 }

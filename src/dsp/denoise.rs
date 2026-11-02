@@ -1,4 +1,4 @@
-//! Suppression de bruit par réseau de neurones (RNNoise, via nnnoiseless).
+//! Suppression de bruit par réseau de neurones (`RNNoise`, via nnnoiseless).
 
 use nnnoiseless::DenoiseState;
 
@@ -8,7 +8,7 @@ pub struct Denoiser {
     state: Box<DenoiseState<'static>>,
     scratch_in: [f32; FRAME],
     scratch_out: [f32; FRAME],
-    /// RNNoise rend le signal avec une trame de retard : on retarde le signal sec
+    /// `RNNoise` rend le signal avec une trame de retard : on retarde le signal sec
     /// d'autant pour pouvoir mélanger sans effet de filtre en peigne.
     dry_delay: [f32; FRAME],
     first: bool,
@@ -36,11 +36,10 @@ impl Denoiser {
         }
         self.last_vad = self.state.process_frame(&mut self.scratch_out, &self.scratch_in);
         let mix = mix.clamp(0.0, 1.0);
-        for i in 0..FRAME {
-            let wet = if self.first { 0.0 } else { self.scratch_out[i] / 32768.0 };
-            let dry = self.dry_delay[i];
-            self.dry_delay[i] = frame[i];
-            frame[i] = wet * mix + dry * (1.0 - mix);
+        for ((x, delayed), out) in frame.iter_mut().zip(self.dry_delay.iter_mut()).zip(self.scratch_out.iter()) {
+            let wet = if self.first { 0.0 } else { out / 32768.0 };
+            let dry = std::mem::replace(delayed, *x);
+            *x = wet * mix + dry * (1.0 - mix);
         }
         self.first = false;
     }
@@ -48,5 +47,11 @@ impl Denoiser {
     /// Probabilité (0..1) que la trame contienne de la voix.
     pub fn vad(&self) -> f32 {
         self.last_vad
+    }
+}
+
+impl std::fmt::Debug for Denoiser {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Denoiser").field("first", &self.first).field("last_vad", &self.last_vad).finish_non_exhaustive()
     }
 }

@@ -4,19 +4,20 @@
 use crate::dsp::resample::Resampler;
 use crate::dsp::{Chain, FRAME};
 use crate::params::Params;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream, StreamConfig};
-use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
+use ringbuf::traits::{Consumer, Producer, Split};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 pub const INTERNAL_RATE: u32 = 48_000;
 /// Durée maximale d'un enregistrement de calibrage (secondes).
 const TAP_CAPACITY: usize = INTERNAL_RATE as usize * 120;
 
-#[derive(Default)]
+/// Flottant 32 bits atomique (stocké sous forme de bits dans un `AtomicU32`).
+#[derive(Debug, Default)]
 pub struct AtomicF32(AtomicU32);
 
 impl AtomicF32 {
@@ -28,7 +29,8 @@ impl AtomicF32 {
     }
 }
 
-#[derive(Default)]
+/// Vumètres et compteurs publiés par le thread audio, lus par l'interface.
+#[derive(Debug, Default)]
 pub struct Meters {
     pub in_peak_db: AtomicF32,
     pub out_peak_db: AtomicF32,
@@ -40,6 +42,7 @@ pub struct Meters {
 }
 
 /// État partagé entre l'interface et les threads audio.
+#[derive(Debug)]
 pub struct Shared {
     params: Mutex<Params>,
     version: AtomicU64,
@@ -59,19 +62,28 @@ impl Shared {
     }
 
     pub fn set_params(&self, p: &Params) {
-        *self.params.lock().unwrap() = p.clone();
+        *lock(&self.params) = p.clone();
         self.version.fetch_add(1, Ordering::Release);
     }
 
     pub fn start_recording(&self) {
-        *self.tap.lock().unwrap() = Some(Vec::with_capacity(TAP_CAPACITY));
+        *lock(&self.tap) = Some(Vec::with_capacity(TAP_CAPACITY));
     }
 
     pub fn stop_recording(&self) -> Vec<f32> {
-        self.tap.lock().unwrap().take().unwrap_or_default()
+        lock(&self.tap).take().unwrap_or_default()
     }
 }
 
+/// Verrouille un `Mutex` côté interface en ignorant l'empoisonnement : les données
+/// protégées (réglages, enregistrement) restent valides même si un autre thread a
+/// paniqué en les tenant. Ne jamais l'appeler depuis un callback audio (bloquant).
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Noms des périphériques d'entrée et de sortie disponibles.
+#[derive(Debug, Clone, Default)]
 pub struct DeviceLists {
     pub inputs: Vec<String>,
     pub outputs: Vec<String>,
@@ -83,7 +95,7 @@ pub fn list_devices() -> DeviceLists {
         match it {
             Ok(devs) => {
                 let devs: Vec<cpal::Device> = devs;
-                devs.iter().map(|d| d.to_string()).collect()
+                devs.iter().map(std::string::ToString::to_string).collect()
             }
             Err(_) => Vec::new(),
         }
@@ -99,6 +111,7 @@ pub fn find_virtual_cable(outputs: &[String]) -> Option<String> {
     outputs.iter().find(|n| n.to_lowercase().contains("cable input")).cloned()
 }
 
+/// Flux audio en cours ; les arrêter revient à détruire cette valeur.
 pub struct Engine {
     _input: Stream,
     _output: Stream,
@@ -108,7 +121,7 @@ pub struct Engine {
     pub output_rate: u32,
 }
 
-pub fn start(shared: Arc<Shared>, input: Option<&str>, output: Option<&str>) -> Result<Engine> {
+pub fn start(shared: &Arc<Shared>, input: Option<&str>, output: Option<&str>) -> Result<Engine> {
     let host = cpal::default_host();
     let in_dev = match input {
         Some(name) => host
@@ -117,21 +130,18 @@ pub fn start(shared: Arc<Shared>, input: Option<&str>, output: Option<&str>) -> 
             .ok_or_else(|| anyhow!("Micro introuvable : {name}"))?,
         None => host.default_input_device().ok_or_else(|| anyhow!("Aucun micro détecté"))?,
     };
-    let out_dev = match output {
-        Some(name) => host
-            .output_devices()?
-            .find(|d| d.to_string() == name)
-            .ok_or_else(|| anyhow!("Sortie introuvable : {name}"))?,
-        None => {
-            let outs: Vec<cpal::Device> = host.output_devices()?.collect();
-            outs.into_iter()
-                .find(|d| d.to_string().to_lowercase().contains("cable input"))
-                .ok_or_else(|| anyhow!("VB-Cable n'est pas installé : choisis une sortie ou installe VB-Cable"))?
-        }
+    let out_dev = if let Some(name) = output {
+        host.output_devices()?.find(|d| d.to_string() == name).ok_or_else(|| anyhow!("Sortie introuvable : {name}"))?
+    } else {
+        let outs: Vec<cpal::Device> = host.output_devices()?.collect();
+        outs.into_iter()
+            .find(|d| d.to_string().to_lowercase().contains("cable input"))
+            .ok_or_else(|| anyhow!("VB-Cable n'est pas installé : choisis une sortie ou installe VB-Cable"))?
     };
 
-    let in_cfg = pick_config(in_dev.supported_input_configs()?.collect(), in_dev.default_input_config()?)?;
-    let out_cfg = pick_config(out_dev.supported_output_configs()?.collect(), out_dev.default_output_config()?)?;
+    let in_cfg = pick_config(&in_dev.supported_input_configs()?.collect::<Vec<_>>(), in_dev.default_input_config()?);
+    let out_cfg =
+        pick_config(&out_dev.supported_output_configs()?.collect::<Vec<_>>(), out_dev.default_output_config()?);
 
     // 200 ms de marge dans le tampon entre capture et sortie.
     let rb = HeapRb::<f32>::new(INTERNAL_RATE as usize / 5);
@@ -167,22 +177,34 @@ pub fn start(shared: Arc<Shared>, input: Option<&str>, output: Option<&str>) -> 
     })
 }
 
+impl std::fmt::Debug for Engine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Engine")
+            .field("input_name", &self.input_name)
+            .field("output_name", &self.output_name)
+            .field("input_rate", &self.input_rate)
+            .field("output_rate", &self.output_rate)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Préfère 48 kHz (fréquence native de la chaîne), sinon la configuration par défaut.
 fn pick_config(
-    ranges: Vec<cpal::SupportedStreamConfigRange>,
+    ranges: &[cpal::SupportedStreamConfigRange],
     default: cpal::SupportedStreamConfig,
-) -> Result<cpal::SupportedStreamConfig> {
+) -> cpal::SupportedStreamConfig {
     let wanted = [SampleFormat::F32, SampleFormat::I16, SampleFormat::I32, SampleFormat::U16];
     for fmt in wanted {
-        for r in &ranges {
-            if r.sample_format() == fmt && r.channels() <= 2 {
-                if let Some(c) = r.clone().try_with_sample_rate(INTERNAL_RATE) {
-                    return Ok(c);
-                }
+        for r in ranges {
+            if r.sample_format() == fmt
+                && r.channels() <= 2
+                && let Some(c) = (*r).try_with_sample_rate(INTERNAL_RATE)
+            {
+                return c;
             }
         }
     }
-    Ok(default)
+    default
 }
 
 fn build_input<T>(
@@ -197,22 +219,21 @@ where
 {
     let channels = cfg.channels as usize;
     let mut resampler = Resampler::new(cfg.sample_rate, INTERNAL_RATE);
-    let mut chain = Chain::new(&shared.params.lock().unwrap());
+    let mut chain = Chain::new(&lock(&shared.params));
     let mut seen_version = 0u64;
     let mut frame = [0f32; FRAME];
     let mut filled = 0usize;
     let mut raw = [0f32; FRAME];
-    let sh = shared.clone();
 
     let stream = dev.build_input_stream::<T, _, _>(
         cfg,
         move |data: &[T], _| {
-            let v = sh.version.load(Ordering::Acquire);
-            if v != seen_version {
-                if let Ok(p) = sh.params.try_lock() {
-                    chain.set_params(&p);
-                    seen_version = v;
-                }
+            let v = shared.version.load(Ordering::Acquire);
+            if v != seen_version
+                && let Ok(p) = shared.params.try_lock()
+            {
+                chain.set_params(&p);
+                seen_version = v;
             }
             for chunk in data.chunks(channels) {
                 // Mono : moyenne des canaux.
@@ -223,15 +244,14 @@ where
                     filled += 1;
                     if filled == FRAME {
                         filled = 0;
-                        if let Ok(mut tap) = sh.tap.try_lock() {
-                            if let Some(buf) = tap.as_mut() {
-                                if buf.len() + FRAME <= buf.capacity() {
-                                    buf.extend_from_slice(&raw);
-                                }
-                            }
+                        if let Ok(mut tap) = shared.tap.try_lock()
+                            && let Some(buf) = tap.as_mut()
+                            && buf.len() + FRAME <= buf.capacity()
+                        {
+                            buf.extend_from_slice(&raw);
                         }
                         let st = chain.process(&mut frame);
-                        let m = &sh.meters;
+                        let m = &shared.meters;
                         m.in_peak_db.store(st.in_peak_db);
                         m.out_peak_db.store(st.out_peak_db);
                         m.gate_open.store(st.gate_open, Ordering::Relaxed);
@@ -256,7 +276,7 @@ fn build_output<T>(
     dev: &cpal::Device,
     cfg: StreamConfig,
     shared: Arc<Shared>,
-    mut cons: impl Consumer<Item = f32> + Observer + Send + 'static,
+    mut cons: impl Consumer<Item = f32> + Send + 'static,
 ) -> Result<Stream>
 where
     T: SizedSample + FromSample<f32>,
