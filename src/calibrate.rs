@@ -4,6 +4,7 @@
 //! puis organise un tournoi entre variantes pour garder celle qui obtient le
 //! meilleur score.
 
+use crate::dnsmos::{Dnsmos, Mos};
 use crate::dsp::loudness::integrated_lufs;
 use crate::dsp::util::{SAMPLE_RATE, db_to_lin, lin_to_db};
 use crate::dsp::{Chain, FRAME};
@@ -396,6 +397,9 @@ pub struct Score {
     pub words_cut_ratio: f32,
     pub clipped_ratio: f32,
     pub tonal_error_db: f32,
+    /// Qualité perçue DNSMOS P.835 de la voix (1 à 5), calculée seulement
+    /// pour la référence et les meilleurs réglages (calcul lourd).
+    pub mos: Option<Mos>,
 }
 
 /// Où se trouvent les phases dans l'enregistrement complet.
@@ -464,6 +468,7 @@ pub fn score(output: &[f32], speech_mask: &[bool], layout: &Layout) -> Score {
         words_cut_ratio: cut,
         clipped_ratio: clipped,
         tonal_error_db: tonal,
+        mos: None,
     }
 }
 
@@ -520,12 +525,16 @@ pub fn run(rec: &Recording, mut progress: impl FnMut(f32)) -> CalibrationResult 
         frame_rms_db(&full).iter().enumerate().map(|(i, &l)| i >= first_speech_frame && l > gate_level).collect();
 
     let baseline = Params { bypass: true, input_gain_db: base.input_gain_db, ..Params::default() };
-    let baseline_score = score(&Chain::render(&baseline, &full).0, &mask, &layout);
+    let baseline_out = Chain::render(&baseline, &full).0;
+    let mut baseline_score = score(&baseline_out, &mask, &layout);
 
     // Manche 1 : toutes les variantes avec RNNoise (rapide). Manche 2 : les
-    // meilleures repassent avec DeepFilterNet (3 fois plus lent).
+    // meilleures repassent avec DeepFilterNet (3 fois plus lent). Manche 3 :
+    // l'oreille artificielle DNSMOS départage les meilleures de toutes.
     let candidates = candidates(&base);
-    let total = candidates.len() + FINALISTS;
+    let net = Dnsmos::new().ok();
+    let rated = if net.is_some() { MOS_FINALISTS + 1 } else { 0 };
+    let total = candidates.len() + FINALISTS + rated;
     let done = std::sync::atomic::AtomicUsize::new(0);
     let mut results = evaluate_all(&candidates, &full, &mask, &layout, &done, total, &mut progress);
     results.sort_by(|a, b| b.1.total.total_cmp(&a.1.total));
@@ -535,11 +544,35 @@ pub fn run(rec: &Recording, mut progress: impl FnMut(f32)) -> CalibrationResult 
         .map(|(p, _)| Params { denoise_engine: DenoiseEngine::DeepFilter, ..p.clone() })
         .collect();
     results.extend(evaluate_all(&finalists, &full, &mask, &layout, &done, total, &mut progress));
+    results.sort_by(|a, b| b.1.total.total_cmp(&a.1.total));
+    if let Some(net) = &net {
+        let speech = layout.speech_samples.clone();
+        let mut step = |audio: &[f32]| {
+            let m = net.rate(audio.get(speech.clone()).unwrap_or(audio), MOS_CLIPS);
+            progress(done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) as f32 / total as f32);
+            m
+        };
+        baseline_score.mos = Some(step(&baseline_out));
+        results.truncate(MOS_FINALISTS);
+        for (p, s) in &mut results {
+            let m = step(&render_aligned(p, &full));
+            s.mos = Some(m);
+            s.total += MOS_WEIGHT * m.ovrl;
+        }
+    }
     progress(1.0);
     let best = results.into_iter().max_by(|a, b| a.1.total.total_cmp(&b.1.total));
     let (params, score) = best.expect("au moins un candidat");
-    CalibrationResult { analysis, params, score, baseline_score, candidates_tested: total }
+    CalibrationResult { analysis, params, score, baseline_score, candidates_tested: candidates.len() + FINALISTS }
 }
+
+/// Meilleurs réglages notés par DNSMOS à la fin du tournoi.
+const MOS_FINALISTS: usize = 3;
+/// Extraits de 9 s notés par DNSMOS dans la lecture (début et fin).
+const MOS_CLIPS: usize = 2;
+/// Poids d'un point de note globale DNSMOS dans le score (en « dB » de score) :
+/// un point sur l'échelle 1-5 sépare un rendu « médiocre » d'un rendu « bon ».
+const MOS_WEIGHT: f32 = 10.0;
 
 /// Variantes de la manche 1 qui repassent avec DeepFilterNet.
 const FINALISTS: usize = 6;
@@ -595,18 +628,20 @@ fn evaluate_all(
 /// vocale) : sinon le début de chaque mot compterait comme « coupé » et les
 /// moteurs les plus lents seraient injustement pénalisés.
 fn evaluate(mut p: Params, full: &[f32], mask: &[bool], layout: &Layout) -> (Params, Score) {
-    let render = |p: &Params| {
-        let (mut out, _) = Chain::render(p, full);
-        let lag = Chain::latency_samples(p).min(out.len());
-        out.drain(..lag);
-        out.resize(full.len(), 0.0);
-        out
-    };
-    let out = render(&p);
+    let out = render_aligned(&p, full);
     let lufs = integrated_lufs(out.get(layout.speech_samples.clone()).unwrap_or(&out));
     p.output_gain_db = (TARGET_LUFS - lufs).clamp(-6.0, 6.0);
-    let s = score(&render(&p), mask, layout);
+    let s = score(&render_aligned(&p, full), mask, layout);
     (p, s)
+}
+
+/// Rendu hors temps réel, recalé sur l'original (sans le retard de la chaîne).
+fn render_aligned(p: &Params, full: &[f32]) -> Vec<f32> {
+    let (mut out, _) = Chain::render(p, full);
+    let lag = Chain::latency_samples(p).min(out.len());
+    out.drain(..lag);
+    out.resize(full.len(), 0.0);
+    out
 }
 
 /// Signal de test synthétique (voix simulée + bruit), utilisé par les tests.

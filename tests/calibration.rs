@@ -27,6 +27,13 @@ fn progress_is_reported_up_to_one() {
     });
     assert!((last - 1.0).abs() < f32::EPSILON);
     assert_eq!(r.candidates_tested, 60, "54 variantes RNNoise + 6 finalistes DeepFilterNet");
+    // Les meilleurs réglages et la référence sont notés par DNSMOS.
+    for m in [r.score.mos, r.baseline_score.mos] {
+        let m = m.expect("note DNSMOS");
+        for v in [m.sig, m.bak, m.ovrl] {
+            assert!(v.is_finite() && (0.5..=5.5).contains(&v), "{m:?}");
+        }
+    }
 }
 
 #[test]

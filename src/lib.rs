@@ -16,6 +16,7 @@
 //! d'intégration `tests/realtime.rs` vérifie l'absence d'allocation.
 
 pub mod calibrate;
+pub mod dnsmos;
 pub mod dsp;
 pub mod engine;
 pub mod monitor;

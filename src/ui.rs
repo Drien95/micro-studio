@@ -629,8 +629,11 @@ fn report_grid(ui: &mut egui::Ui, before: &calibrate::Score, after: &calibrate::
 type ReportRow = (&'static str, fn(&calibrate::Score) -> String);
 
 /// Lignes du rapport : libellé et mise en forme de la mesure.
-fn report_rows() -> [ReportRow; 6] {
+fn report_rows() -> [ReportRow; 9] {
     [
+        ("Qualité perçue, note globale (DNSMOS)", |s| mos_label(s.mos.map(|m| m.ovrl))),
+        ("Clarté de la voix (DNSMOS)", |s| mos_label(s.mos.map(|m| m.sig))),
+        ("Discrétion du bruit (DNSMOS)", |s| mos_label(s.mos.map(|m| m.bak))),
         ("Voix au-dessus du bruit de fond", |s| format!("{:.0} dB", s.noise_reduction_db)),
         ("Voix au-dessus du clavier", |s| format!("{:.0} dB", s.keyboard_reduction_db)),
         ("Volume (cible -18 LUFS)", |s| format!("{:.1} LUFS", s.loudness_lufs)),
@@ -638,6 +641,11 @@ fn report_rows() -> [ReportRow; 6] {
         ("Mots coupés", |s| format!("{:.0} %", s.words_cut_ratio * 100.0)),
         ("Équilibre de la voix (écart)", |s| format!("{:.1} dB", s.tonal_error_db)),
     ]
+}
+
+/// Note DNSMOS « 3,8 / 5 », ou un tiret si elle n'a pas été calculée.
+fn mos_label(v: Option<f32>) -> String {
+    v.map_or_else(|| "—".to_string(), |v| format!("{v:.1} / 5").replace('.', ","))
 }
 
 fn meter_row(ui: &mut egui::Ui, label: &str, db: f32) {

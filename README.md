@@ -31,7 +31,7 @@ Latence totale : environ 10 ms de traitement + 20 ms de tampon.
 2. **8 s de frappe au clavier, sans parler** : mesure du bruit des touches et de la souris.
 3. **Lecture d'un texte** (15 à 40 s) : mesure du niveau, du timbre, des sifflantes et des variations de volume de ta voix.
 4. **Proposition** : réglages déduits des mesures (gain, coupe-bandes anti-bourdonnement, seuil du gate au-dessus des touches, porte vocale, fréquence du de-esser, corrections d'EQ par rapport au spectre moyen de la parole, ratio du compresseur).
-5. **Tournoi** : 54 variantes avec RNNoise, puis les 6 meilleures repassent avec DeepFilterNet. Les 60 variantes sont rendues sur ton enregistrement et notées (voix au-dessus du bruit et du clavier, sonie en LUFS selon UIT-R BS.1770 avec une cible de -18 LUFS, régularité du volume, mots coupés, saturation, équilibre tonal). La meilleure gagne et un rapport avant/après s'affiche.
+5. **Tournoi** : 54 variantes avec RNNoise, puis les 6 meilleures repassent avec DeepFilterNet. Les 60 variantes sont rendues sur ton enregistrement et notées (voix au-dessus du bruit et du clavier, sonie en LUFS selon UIT-R BS.1770 avec une cible de -18 LUFS, régularité du volume, mots coupés, saturation, équilibre tonal). Enfin, les 3 meilleures sont écoutées par DNSMOS P.835, un réseau de Microsoft qui prédit la note (1 à 5) que donneraient des auditeurs, et cette note les départage. La meilleure gagne et un rapport avant/après s'affiche.
 6. **Écoute avant/après**, puis tu gardes ou tu annules.
 
 ## Installation
@@ -76,6 +76,7 @@ mêmes vérifications que GitHub. Pour contribuer : [CONTRIBUTING.md](CONTRIBUTI
 - [ ] Note de qualité par IA (DNSMOS, modèle ONNX de Microsoft) dans le tournoi
 - [x] DeepFilterNet en option « qualité maximale » (choisi par le calibrage s'il fait mieux)
 - [x] Notre propre moteur d'inférence DeepFilterNet, sans allocation, vérifié contre l'officiel
+- [x] Note de qualité perçue DNSMOS P.835 dans le calibrage (exécution maison)
 - [x] Écoute de contrôle dans le casque depuis l'application (« M'écouter dans le casque »)
 - [ ] Icône dans la barre des tâches, lancement au démarrage de Windows
 - [x] Installation de VB-Cable en un clic depuis l'application
@@ -83,4 +84,4 @@ mêmes vérifications que GitHub. Pour contribuer : [CONTRIBUTING.md](CONTRIBUTI
 
 ## Licence
 
-MIT. Utilise [nnnoiseless](https://github.com/jneem/nnnoiseless) (port Rust de RNNoise, BSD) et [DeepFilterNet3](https://github.com/Rikorose/DeepFilterNet) de Hendrik Schröter : seuls ses poids entraînés sont repris (MIT ou Apache-2.0, voir `models/DeepFilterNet3/`), le moteur qui les exécute est le nôtre.
+MIT. Utilise [nnnoiseless](https://github.com/jneem/nnnoiseless) (port Rust de RNNoise, BSD) et [DeepFilterNet3](https://github.com/Rikorose/DeepFilterNet) de Hendrik Schröter : seuls ses poids entraînés sont repris (MIT ou Apache-2.0, voir `models/DeepFilterNet3/`), le moteur qui les exécute est le nôtre. La note de qualité DNSMOS P.835 utilise les poids de Microsoft ([DNS-Challenge](https://github.com/microsoft/DNS-Challenge), CC BY 4.0, voir `models/DNSMOS/`), exécutés par notre propre code.

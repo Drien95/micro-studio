@@ -9,6 +9,16 @@ projet respecte le [versionnage sémantique](https://semver.org/lang/fr/)
 ## [Non publié]
 
 ### Ajouté
+- Note de qualité perçue DNSMOS P.835 (Microsoft, ICASSP 2022) dans le
+  calibrage : la voix, le bruit de fond et l'ensemble sont notés de 1 à 5
+  comme le feraient des auditeurs (recommandation ITU-T P.835). Les 3
+  meilleurs réglages du tournoi sont départagés par cette note (10 points de
+  score par point de note globale) et le rapport affiche les trois notes
+  avant/après. Exécution écrite pour Micro Studio (`dnsmos`) : spectre par
+  noyaux de STFT appris, 7 convolutions 3×3 réparties sur tous les cœurs,
+  décimation 48 → 16 kHz par sinus cardinal fenêtré (Kaiser). Vérifiée contre
+  onnxruntime (écart < 1e-3 sur les notes brutes). Seuls les poids viennent
+  de Microsoft (`models/DNSMOS/`, CC BY 4.0, empreinte SHA-256 notée).
 - Moteur de suppression de bruit « premium » DeepFilterNet3, au choix avec
   RNNoise dans « Suppression de bruit » (30 ms de retard). Le calibrage fait
   repasser ses 6 meilleures variantes avec DeepFilterNet et garde le meilleur
