@@ -78,7 +78,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       # `+version` l'emporte sur rust-toolchain.toml (qui fige la version de travail).
-      - run: cargo +${{ steps.msrv.outputs.version }} check --locked --all-targets
+      # La version minimale vaut pour ce que compilent les utilisateurs
+      # (bibliothèque et exécutable) : les dépendances de test, comme le moteur
+      # DeepFilterNet officiel qui sert de référence, peuvent en exiger une plus
+      # récente.
+      - run: cargo +${{ steps.msrv.outputs.version }} check --locked --lib --bins
 
   doc:
     name: Documentation

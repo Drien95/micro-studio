@@ -5,6 +5,7 @@
 pub mod biquad;
 pub mod deepfilter;
 pub mod denoise;
+pub mod dfn;
 pub mod dynamics;
 pub mod loudness;
 pub mod resample;
@@ -12,7 +13,7 @@ pub mod util;
 
 use crate::params::{DenoiseEngine, EqKind, MAX_NOTCHES, Params};
 use biquad::Biquad;
-use deepfilter::{DeepFilter, DeepFilterWorker, lsnr_to_voice_probability};
+use deepfilter::{DeepFilter, lsnr_to_voice_probability};
 use denoise::Denoiser;
 pub use denoise::FRAME;
 use dynamics::{Compressor, DeEsser, Gate, Limiter, VoiceGate};
@@ -31,15 +32,12 @@ pub struct FrameStats {
     pub vad: f32,
 }
 
-/// Où tourne DeepFilterNet.
+/// État de DeepFilterNet dans la chaîne.
 #[derive(Debug)]
 enum DeepStage {
     /// Pas encore chargé (hors temps réel, chargé au premier besoin).
     Unloaded,
-    /// Dans le fil courant : rendu hors temps réel (calibrage).
-    Inline(Box<DeepFilter>),
-    /// Dans un fil dédié : temps réel.
-    Worker(DeepFilterWorker),
+    Loaded(Box<DeepFilter>),
 }
 
 /// Chaîne d'effets complète ; un état par flux audio.
@@ -83,10 +81,11 @@ impl Chain {
         c
     }
 
-    /// Chaîne pour le callback audio : DeepFilterNet tourne dans son propre
-    /// fil, lancé dès maintenant pour que changer de moteur n'alloue rien.
+    /// Chaîne pour le callback audio : DeepFilterNet est chargé dès
+    /// maintenant, pour que changer de moteur en cours de route n'alloue rien.
     pub fn new_realtime(params: &Params) -> Self {
-        Self::build(params, DeepStage::Worker(DeepFilterWorker::spawn()))
+        let deep = DeepFilter::new().map_or(DeepStage::Unloaded, |d| DeepStage::Loaded(Box::new(d)));
+        Self::build(params, deep)
     }
 
     /// Hors temps réel seulement : peut charger DeepFilterNet (allocation).
@@ -97,7 +96,7 @@ impl Chain {
             && matches!(self.deep, DeepStage::Unloaded)
             && let Ok(df) = DeepFilter::new()
         {
-            self.deep = DeepStage::Inline(Box::new(df));
+            self.deep = DeepStage::Loaded(Box::new(df));
         }
         // Deux biquads en série : pente de 24 dB/octave (Butterworth d'ordre 4).
         self.hpf[0].set_highpass(p.hpf_hz, 0.5412);
@@ -183,20 +182,13 @@ impl Chain {
         st.gate_gain_db = lin_to_db(min_gate);
 
         if p.denoise_enabled {
-            st.vad = match (p.denoise_engine, &mut self.deep) {
-                (DenoiseEngine::DeepFilter, DeepStage::Inline(df)) => {
-                    df.set_strength(p.denoise_mix);
-                    lsnr_to_voice_probability(df.process(frame))
-                }
-                (DenoiseEngine::DeepFilter, DeepStage::Worker(w)) => {
-                    w.process(frame, p.denoise_mix);
-                    lsnr_to_voice_probability(w.lsnr())
-                }
+            st.vad = if let (DenoiseEngine::DeepFilter, DeepStage::Loaded(df)) = (p.denoise_engine, &mut self.deep) {
+                df.set_strength(p.denoise_mix);
+                lsnr_to_voice_probability(df.process(frame))
+            } else {
                 // RNNoise, ou DeepFilterNet impossible à charger : RNNoise.
-                _ => {
-                    self.denoiser.process(frame, p.denoise_mix);
-                    self.denoiser.vad()
-                }
+                self.denoiser.process(frame, p.denoise_mix);
+                self.denoiser.vad()
             };
             // La porte vocale a besoin de la détection de voix du débruiteur.
             if p.voice_gate_enabled {
@@ -449,21 +441,16 @@ mod tests {
     }
 
     #[test]
-    fn realtime_chain_runs_deepfilter_in_its_own_thread() {
-        let p = only(|p| {
+    fn realtime_chain_preloads_deepfilter() {
+        let mut chain = Chain::new_realtime(&Params::default());
+        assert!(format!("{chain:?}").contains("Loaded"), "chargé avant d'être choisi");
+        chain.set_params(&only(|p| {
             p.denoise_enabled = true;
             p.denoise_engine = DenoiseEngine::DeepFilter;
-        });
-        let mut chain = Chain::new_realtime(&p);
-        let mut heard = false;
-        for _ in 0..300 {
-            let mut f = [0.1f32; FRAME];
-            chain.process(&mut f);
-            heard |= f.iter().any(|&s| s != 0.0);
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-        assert!(heard, "le fil de DeepFilterNet renvoie des trames");
-        assert!(format!("{chain:?}").contains("Worker"));
+        }));
+        let mut f = [0.1f32; FRAME];
+        chain.process(&mut f);
+        assert!(f.iter().all(|s| s.is_finite()));
     }
 
     #[test]

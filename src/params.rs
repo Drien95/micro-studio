@@ -15,7 +15,7 @@ pub enum DenoiseEngine {
     /// RNNoise : léger, 10 ms de retard.
     #[default]
     RnNoise,
-    /// DeepFilterNet3 : plus efficace (bruits brefs, aigus), 40 ms de retard.
+    /// DeepFilterNet3 : plus efficace (bruits brefs, aigus), 30 ms de retard.
     DeepFilter,
 }
 

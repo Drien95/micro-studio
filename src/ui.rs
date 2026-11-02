@@ -592,7 +592,7 @@ fn noise_sections(ui: &mut egui::Ui, p: &mut Params) {
             ui.radio_value(&mut p.denoise_engine, DenoiseEngine::RnNoise, "RNNoise (léger)")
                 .on_hover_text("Peu gourmand, 10 ms de retard.");
             ui.radio_value(&mut p.denoise_engine, DenoiseEngine::DeepFilter, "DeepFilterNet (premium)").on_hover_text(
-                "Plus efficace sur le clavier et les bruits brefs, son plus naturel dans les aigus. 40 ms de retard.",
+                "Plus efficace sur le clavier et les bruits brefs, son plus naturel dans les aigus. 30 ms de retard.",
             );
         });
         ui.add(egui::Slider::new(&mut p.denoise_mix, 0.0..=1.0).text("Intensité"));

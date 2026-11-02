@@ -75,7 +75,7 @@ mêmes vérifications que GitHub. Pour contribuer : [CONTRIBUTING.md](CONTRIBUTI
 - [x] Calibrage automatique avec tournoi de réglages
 - [ ] Note de qualité par IA (DNSMOS, modèle ONNX de Microsoft) dans le tournoi
 - [x] DeepFilterNet en option « qualité maximale » (choisi par le calibrage s'il fait mieux)
-- [ ] Notre propre moteur d'inférence DeepFilterNet, sans allocation, vérifié contre l'officiel
+- [x] Notre propre moteur d'inférence DeepFilterNet, sans allocation, vérifié contre l'officiel
 - [x] Écoute de contrôle dans le casque depuis l'application (« M'écouter dans le casque »)
 - [ ] Icône dans la barre des tâches, lancement au démarrage de Windows
 - [x] Installation de VB-Cable en un clic depuis l'application
@@ -83,4 +83,4 @@ mêmes vérifications que GitHub. Pour contribuer : [CONTRIBUTING.md](CONTRIBUTI
 
 ## Licence
 
-MIT. Utilise [nnnoiseless](https://github.com/jneem/nnnoiseless) (port Rust de RNNoise, BSD) et [DeepFilterNet3](https://github.com/Rikorose/DeepFilterNet) de Hendrik Schröter (MIT ou Apache-2.0, via `deep-filter-rt`).
+MIT. Utilise [nnnoiseless](https://github.com/jneem/nnnoiseless) (port Rust de RNNoise, BSD) et [DeepFilterNet3](https://github.com/Rikorose/DeepFilterNet) de Hendrik Schröter : seuls ses poids entraînés sont repris (MIT ou Apache-2.0, voir `models/DeepFilterNet3/`), le moteur qui les exécute est le nôtre.

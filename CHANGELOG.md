@@ -9,13 +9,20 @@ projet respecte le [versionnage sémantique](https://semver.org/lang/fr/)
 ## [Non publié]
 
 ### Ajouté
-- Moteur de suppression de bruit « premium » DeepFilterNet3 (`dsp::deepfilter`,
-  via `deep-filter-rt`, modèle embarqué vérifié identique à l'original par
-  SHA-256). Au choix avec RNNoise dans « Suppression de bruit ». En temps réel
-  il tourne dans son propre fil (canaux bornés, aucune allocation côté audio),
-  pour 40 ms de retard au total. Le calibrage fait repasser ses 6 meilleures
-  variantes avec DeepFilterNet et garde le meilleur des deux moteurs ; les
-  rendus sont réalignés sur l'original pour ne pas pénaliser le retard.
+- Moteur de suppression de bruit « premium » DeepFilterNet3, au choix avec
+  RNNoise dans « Suppression de bruit » (30 ms de retard). Le calibrage fait
+  repasser ses 6 meilleures variantes avec DeepFilterNet et garde le meilleur
+  des deux moteurs ; les rendus sont réalignés sur l'original pour ne pas
+  pénaliser le retard.
+- Moteur d'inférence DeepFilterNet3 écrit pour Micro Studio (`dsp::dfn`) :
+  lecteur ONNX minimal (`dfn::onnx`), couches (convolutions causales, GRU,
+  linéaires par groupes, convolutions transposées), STFT, caractéristiques ERB
+  et filtre profond. Aucune allocation après le chargement : il tourne dans le
+  callback audio. Vérifié contre le moteur officiel `libDF` (écart maximal
+  7e-8 sur la sortie), un peu plus rapide (0,75 contre 0,83 ms par trame
+  mesurés). Seuls les poids viennent du projet DeepFilterNet
+  (`models/DeepFilterNet3/`, MIT ou Apache-2.0, empreintes SHA-256 notées).
+  Le moteur officiel n'est plus qu'une dépendance de test.
 - Calibrage : nouvelle étape « tape au clavier sans parler » (8 s). Les
   touches sont mesurées, la porte de bruit est placée au-dessus de leurs
   crêtes quand c'est possible, et le tournoi note maintenant l'écart entre la

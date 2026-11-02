@@ -2,4 +2,4 @@
 allow-unwrap-in-tests = true
 allow-panic-in-tests = true
 # Noms propres d'algorithmes cités dans la documentation.
-doc-valid-idents = ["RNNoise", "DeepFilterNet", "DeepFilterNet3", "DNSMOS", ".."]
+doc-valid-idents = ["RNNoise", "DeepFilterNet", "DeepFilterNet3", "DNSMOS", "ReLU", ".."]

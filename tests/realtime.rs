@@ -111,6 +111,21 @@ fn realtime_chain_with_deepfilter_does_not_allocate() {
 }
 
 #[test]
+fn homemade_deepfilter_engine_does_not_allocate() {
+    let mut engine = micro_studio::dsp::dfn::DfnEngine::new().expect("poids embarqués");
+    let input = test_signal();
+    let mut out = [0f32; FRAME];
+    let n = allocations_during(|| {
+        for chunk in input.as_chunks::<FRAME>().0 {
+            engine.process(chunk, &mut out);
+        }
+        engine.set_atten_lim(20.0);
+        engine.reset();
+    });
+    assert_eq!(n, 0, "le moteur DeepFilterNet maison alloue {n} fois");
+}
+
+#[test]
 fn set_params_does_not_allocate() {
     let presets = all_settings();
     let mut chain = Chain::new(&Params::default());
