@@ -290,53 +290,6 @@ impl DeEsser {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Limiteur avec anticipation de 1,5 ms : aucun échantillon ne dépasse le plafond.
-
-#[derive(Debug)]
-pub struct Limiter {
-    ceiling: f32,
-    delay: Vec<f32>,
-    pos: usize,
-    gain: f32,
-    release: f32,
-    attack: f32,
-}
-
-pub const LIMITER_LOOKAHEAD: usize = 72; // 1,5 ms à 48 kHz
-
-impl Default for Limiter {
-    fn default() -> Self {
-        Self {
-            ceiling: db_to_lin(-1.0),
-            delay: vec![0.0; LIMITER_LOOKAHEAD],
-            pos: 0,
-            gain: 1.0,
-            release: time_coef(80.0),
-            attack: time_coef(0.5),
-        }
-    }
-}
-
-impl Limiter {
-    pub fn configure(&mut self, ceiling_db: f32) {
-        self.ceiling = db_to_lin(ceiling_db.min(0.0));
-    }
-
-    #[inline]
-    pub fn process(&mut self, x: f32) -> f32 {
-        let delayed = self.delay[self.pos];
-        self.delay[self.pos] = x;
-        self.pos = (self.pos + 1) % self.delay.len();
-
-        let peak = x.abs();
-        let target = if peak > self.ceiling { self.ceiling / peak } else { 1.0 };
-        let coef = if target < self.gain { self.attack } else { self.release };
-        self.gain = target + (self.gain - target) * coef;
-        (delayed * self.gain).clamp(-self.ceiling, self.ceiling)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -473,27 +426,5 @@ mod tests {
         let reduction = lin_to_db(peak(&high[4800..]) / 0.5);
         assert!((reduction + 6.0).abs() < 0.5, "sifflante atténuée de {reduction:.1} dB (6 dB demandés)");
         assert!(d.gain_reduction_db() < -3.0);
-    }
-
-    #[test]
-    fn limiter_delays_by_lookahead_and_respects_ceiling() {
-        let mut l = Limiter::default();
-        l.configure(-6.0);
-        let mut out = Vec::new();
-        out.push(l.process(0.1));
-        for _ in 0..LIMITER_LOOKAHEAD {
-            out.push(l.process(0.0));
-        }
-        assert!((out[LIMITER_LOOKAHEAD] - 0.1).abs() < 1e-6, "retard de {LIMITER_LOOKAHEAD} échantillons");
-        let loud = run(|x| l.process(x), 2.0, 9600);
-        assert!(peak(&loud) <= db_to_lin(-6.0) + 1e-6);
-    }
-
-    #[test]
-    fn limiter_ceiling_cannot_exceed_full_scale() {
-        let mut l = Limiter::default();
-        l.configure(6.0);
-        let out = run(|x| l.process(x), 3.0, 4800);
-        assert!(peak(&out) <= 1.0 + 1e-6);
     }
 }

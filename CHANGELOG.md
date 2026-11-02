@@ -9,6 +9,16 @@ projet respecte le [versionnage sémantique](https://semver.org/lang/fr/)
 ## [Non publié]
 
 ### Modifié
+- Limiteur « true peak » (UIT-R BS.1770-4, annexe 2) : la crête est mesurée
+  sur le signal suréchantillonné 4 fois (filtre de 48 coefficients), donc
+  aussi entre les échantillons, et le plafond s'exprime en dBTP (-1 dBTP par
+  défaut, -2 dBTP pour le préréglage « Stream / jeu », marge pour Opus).
+  Gain par minimum glissant puis moyenne glissante : pas de saut de gain.
+  Retard 1,6 ms, compté dans le réalignement du calibrage. Vérifié avec un
+  crête-mètre de référence (suréchantillonnage x8).
+- Compresseur : taux plafonné à 4:1 dans le calibrage et le préréglage
+  « Voix radio » (consensus des guides de production : 2:1 à 4:1).
+- Références audio des préréglages régénérées (écarts ≤ 0,08 dB).
 - Calibrage : le gain de sortie peut monter jusqu'à +12 dB (au lieu de +6)
   pour atteindre -18 LUFS avec un micro USB faible (constaté : -21,9 LUFS sur
   le Logitech) ; les mots coupés pèsent plus lourd (300 points au lieu de

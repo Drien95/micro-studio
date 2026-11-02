@@ -194,11 +194,19 @@ pub fn builtin_presets() -> Vec<(&'static str, Params)> {
     radio.eq_bands[1].gain_db = -4.0;
     radio.eq_bands[2].gain_db = 4.0;
     radio.eq_bands[3].gain_db = 3.0;
-    radio.comp_ratio = 5.0;
+    radio.comp_ratio = 4.0;
     radio.comp_threshold_db = -24.0;
     radio.comp_makeup_db = 7.0;
 
-    let stream = Params { gate_range_db: -60.0, comp_ratio: 3.5, comp_makeup_db: 5.0, ..Params::default() };
+    // Discord et les jeux compressent en Opus, avec pertes : -2 dBTP de plafond
+    // laissent la marge recommandée pour les codecs.
+    let stream = Params {
+        gate_range_db: -60.0,
+        comp_ratio: 3.5,
+        comp_makeup_db: 5.0,
+        limiter_ceiling_db: -2.0,
+        ..Params::default()
+    };
 
     let light = Params {
         deesser_enabled: false,

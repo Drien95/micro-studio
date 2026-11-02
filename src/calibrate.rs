@@ -32,6 +32,10 @@ Pour finir, je compte jusqu'à dix : un, deux, trois, quatre, cinq, six, sept, h
 pub const TARGET_LUFS: f32 = -18.0;
 /// Niveau moyen de voix visé en sortie (dBFS RMS), utilisé pour le compresseur.
 pub const TARGET_SPEECH_DB: f32 = -18.0;
+/// Taux de compression maximal choisi par le calibrage. Les guides de
+/// production de la voix (radio, podcast) s'accordent sur 2:1 à 4:1 pour
+/// 3 à 6 dB de réduction ; au-delà, la voix devient plate et « pompée ».
+const MAX_COMP_RATIO: f32 = 4.0;
 /// Niveau visé avant compression, après le gain d'entrée.
 const PRE_COMP_SPEECH_DB: f32 = -22.0;
 
@@ -374,7 +378,7 @@ pub fn propose(a: &Analysis) -> Params {
     } else if a.dynamic_range_db < 14.0 {
         3.5
     } else {
-        5.0
+        MAX_COMP_RATIO
     };
     p.comp_threshold_db = PRE_COMP_SPEECH_DB - 4.0;
     let expected_gr = 4.0 * (1.0 - 1.0 / p.comp_ratio);
@@ -500,7 +504,7 @@ fn candidates(base: &Params) -> Vec<Params> {
                 for voice in [None, Some(0.5), Some(0.7)] {
                     let mut p = base.clone();
                     p.gate_threshold_db += gate_off;
-                    p.comp_ratio = (p.comp_ratio * ratio_mul).max(1.5);
+                    p.comp_ratio = (p.comp_ratio * ratio_mul).clamp(1.5, MAX_COMP_RATIO);
                     for b in &mut p.eq_bands {
                         b.gain_db *= eq_scale;
                     }
@@ -620,7 +624,7 @@ pub fn refinements(p: &Params, step: f32) -> Vec<Params> {
         |p, d| p.denoise_mix = (p.denoise_mix + 0.1 * d).clamp(0.5, 1.0),
         |p, d| p.deesser_threshold_db = (p.deesser_threshold_db + 3.0 * d).clamp(-50.0, -5.0),
         |p, d| p.comp_threshold_db = (p.comp_threshold_db + 2.0 * d).clamp(-50.0, -5.0),
-        |p, d| p.comp_ratio = (p.comp_ratio * (1.0 + 0.2 * d)).clamp(1.5, 10.0),
+        |p, d| p.comp_ratio = (p.comp_ratio * (1.0 + 0.2 * d)).clamp(1.5, MAX_COMP_RATIO),
         |p, d| p.hpf_hz = (p.hpf_hz + 20.0 * d).clamp(50.0, 160.0),
         |p, d| {
             for b in &mut p.eq_bands {
@@ -954,6 +958,10 @@ mod tests {
     fn propose_scales_compression_with_dynamics() {
         let ratio = |d| propose(&Analysis { dynamic_range_db: d, ..Analysis::default() }).comp_ratio;
         assert!(ratio(5.0) < ratio(10.0) && ratio(10.0) < ratio(20.0));
+        // Jamais au-delà de 4:1, même dans le tournoi et l'affinage.
+        let base = propose(&Analysis { dynamic_range_db: 30.0, ..Analysis::default() });
+        assert!(candidates(&base).iter().all(|p| p.comp_ratio <= MAX_COMP_RATIO));
+        assert!(refinements(&base, 1.0).iter().all(|p| p.comp_ratio <= MAX_COMP_RATIO));
     }
 
     #[test]

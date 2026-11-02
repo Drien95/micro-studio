@@ -9,6 +9,7 @@ pub mod dereverb;
 pub mod dfn;
 pub mod dynamic_eq;
 pub mod dynamics;
+pub mod limiter;
 pub mod loudness;
 pub mod multiband;
 pub mod resample;
@@ -21,7 +22,8 @@ use denoise::Denoiser;
 pub use denoise::FRAME;
 use dereverb::Dereverb;
 use dynamic_eq::DynamicEq;
-use dynamics::{Compressor, DeEsser, Gate, Limiter, VoiceGate};
+use dynamics::{Compressor, DeEsser, Gate, VoiceGate};
+use limiter::Limiter;
 use multiband::Multiband;
 use util::{db_to_lin, lin_to_db};
 
@@ -253,12 +255,13 @@ impl Chain {
     }
 
     /// Retard (en échantillons) de la chaîne hors temps réel avec ces réglages :
-    /// débruiteur, porte vocale et anti-réverbération. Sert à réaligner un rendu sur l'original.
+    /// débruiteur, porte vocale, anti-réverbération et limiteur. Sert à réaligner un rendu sur l'original.
     pub fn latency_samples(p: &Params) -> usize {
         if p.bypass {
             return 0;
         }
-        let dereverb = if p.dereverb_enabled { dereverb::LATENCY } else { 0 };
+        let limiter = if p.limiter_enabled { limiter::LATENCY } else { 0 };
+        let dereverb = if p.dereverb_enabled { dereverb::LATENCY } else { 0 } + limiter;
         if !p.denoise_enabled {
             return dereverb;
         }

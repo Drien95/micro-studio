@@ -445,8 +445,14 @@ impl App {
         });
 
         section(ui, "Limiteur", Some(&mut p.limiter_enabled), |ui| {
-            ui.label(RichText::new("Plafond de sécurité : même si tu cries, ça ne sature jamais.").weak());
-            ui.add(egui::Slider::new(&mut p.limiter_ceiling_db, -12.0..=0.0).text("Plafond").suffix(" dB"));
+            ui.label(
+                RichText::new(
+                    "Plafond de sécurité : même si tu cries, ça ne sature jamais, même entre deux échantillons.",
+                )
+                .weak(),
+            );
+            ui.add(egui::Slider::new(&mut p.limiter_ceiling_db, -12.0..=0.0).text("Plafond").suffix(" dBTP"))
+                .on_hover_text("-1 dBTP est la norme ; -2 dBTP laisse de la marge à Discord (compression Opus).");
         });
 
         if p != self.settings.params {
