@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Hook git optionnel : lance la CI locale rapide avant chaque `git push`.
+# Activation (une fois) :  git config core.hooksPath .githooks
+# Pour passer outre exceptionnellement :  git push --no-verify
+exec "$(git rev-parse --show-toplevel)/scripts/ci.sh"

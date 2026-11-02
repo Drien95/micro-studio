@@ -70,7 +70,14 @@ Sur Windows 11 avec le micro réel et VB-Cable :
 5. Discord ou OBS avec *CABLE Output* comme micro : voix claire, sans écho.
 6. Fermer et rouvrir : les réglages sont conservés.
 
-## 6. Critères de sortie
+## 6. Où tournent les tests
+
+- **En local**, avant chaque envoi : `scripts/ci.ps1` (ou `ci.sh`), en moins
+  d'une minute une fois compilé, éventuellement via le hook `pre-push`.
+- **Sur GitHub**, à chaque push et pull request : la même chose sur Windows,
+  Linux et macOS, plus la version minimale de Rust. C'est la référence.
+
+## 7. Critères de sortie
 
 Une pull request n'est fusionnée que si, dans la CI :
 
@@ -80,7 +87,7 @@ Une pull request n'est fusionnée que si, dans la CI :
   `.github/workflows/ci.yml` ; 88,6 % au 2 novembre 2026) ;
 - `cargo deny` ne signale aucune faille connue ni licence interdite.
 
-## 7. Ajouter un test
+## 8. Ajouter un test
 
 - Nouvelle fonction : test unitaire dans le même fichier.
 - Bug : d'abord un test qui échoue, puis la correction.
