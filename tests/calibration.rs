@@ -28,7 +28,7 @@ fn progress_is_reported_up_to_one() {
     });
     assert!((last - 1.0).abs() < f32::EPSILON);
     // 54 variantes RNNoise + 6 finalistes DeepFilterNet + 3 tours d'affinage.
-    assert!((61..=120).contains(&r.candidates_tested), "{} réglages", r.candidates_tested);
+    assert!((61..=60 + 3 * 33).contains(&r.candidates_tested), "{} réglages", r.candidates_tested);
     // Les meilleurs réglages et la référence sont notés par DNSMOS.
     for m in [r.score.mos, r.baseline_score.mos] {
         let m = m.expect("note DNSMOS");
@@ -70,10 +70,14 @@ fn degenerate_recordings_do_not_panic() {
 fn refinements_nudge_one_setting_at_a_time() {
     let p = Params::default();
     let r = refinements(&p, 1.0);
-    assert_eq!(r.len(), 15, "8 réglages fins dans les deux sens, sauf le débruitage déjà au maximum");
+    assert_eq!(
+        r.len(),
+        18,
+        "8 réglages fins dans les deux sens (sauf le débruitage, déjà au maximum) + multibande, égaliseur dynamique, anti-réverbération"
+    );
     assert!(r.iter().all(|q| *q != p));
     let with_voice = Params { voice_gate_enabled: true, ..Params::default() };
-    assert_eq!(refinements(&with_voice, 1.0).len(), 19, "+ seuil et maintien de la porte vocale");
+    assert_eq!(refinements(&with_voice, 1.0).len(), 22, "+ seuil et maintien de la porte vocale");
     // Un pas plus petit retouche moins.
     let small = refinements(&p, 0.25);
     assert!(
@@ -82,5 +86,13 @@ fn refinements_nudge_one_setting_at_a_time() {
     // Les bornes sont respectées.
     assert!(r.iter().all(|q| (0.5..=1.0).contains(&q.denoise_mix)));
     let half = Params { denoise_mix: 0.7, ..Params::default() };
-    assert_eq!(refinements(&half, 1.0).len(), 16);
+    assert_eq!(refinements(&half, 1.0).len(), 19);
+    let mb = Params { mb_enabled: true, ..Params::default() };
+    let r = refinements(&mb, 1.0);
+    assert_eq!(r.len(), 22, "+ seuils et ratios du multibande");
+    assert!(r.iter().any(|q| !q.mb_enabled), "on essaie aussi de l'éteindre");
+    let deq = Params { deq_enabled: true, ..Params::default() };
+    assert_eq!(refinements(&deq, 1.0).len(), 20, "+ seuils de l'égaliseur dynamique");
+    let rev = Params { dereverb_enabled: true, ..Params::default() };
+    assert_eq!(refinements(&rev, 1.0).len(), 22, "+ intensité et durée de l'écho");
 }

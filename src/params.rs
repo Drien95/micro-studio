@@ -72,6 +72,13 @@ pub struct Params {
     pub voice_gate_hold_ms: f32,
     pub voice_gate_range_db: f32,
 
+    /// Anti-réverbération (écho de la pièce), après le débruitage.
+    pub dereverb_enabled: bool,
+    /// Durée de réverbération supposée de la pièce (s).
+    pub dereverb_t60_s: f32,
+    /// Part de la réverbération estimée qui est retirée (0..1).
+    pub dereverb_strength: f32,
+
     pub deesser_enabled: bool,
     pub deesser_freq_hz: f32,
     pub deesser_threshold_db: f32,
@@ -79,6 +86,17 @@ pub struct Params {
 
     pub eq_enabled: bool,
     pub eq_bands: [EqBand; 4],
+
+    /// Égaliseur dynamique : bandes qui ne baissent que quand elles débordent.
+    pub deq_enabled: bool,
+    pub deq_bands: [crate::dsp::dynamic_eq::DynamicBand; crate::dsp::dynamic_eq::BANDS],
+
+    /// Compresseur multibande (graves, médiums, aigus), avant le compresseur.
+    pub mb_enabled: bool,
+    /// Séparations graves/médiums et médiums/aigus (Hz).
+    pub mb_crossovers_hz: [f32; 2],
+    pub mb_threshold_db: [f32; 3],
+    pub mb_ratio: [f32; 3],
 
     pub comp_enabled: bool,
     pub comp_threshold_db: f32,
@@ -118,12 +136,21 @@ impl Default for Params {
             voice_gate_confirm_ms: 30.0,
             voice_gate_hold_ms: 300.0,
             voice_gate_range_db: -30.0,
+            dereverb_enabled: false,
+            dereverb_t60_s: 0.5,
+            dereverb_strength: 0.7,
             deesser_enabled: true,
             deesser_freq_hz: 6500.0,
             deesser_threshold_db: -30.0,
             deesser_max_reduction_db: 6.0,
             eq_enabled: true,
             eq_bands: default_eq(),
+            deq_enabled: false,
+            deq_bands: crate::dsp::dynamic_eq::default_bands(),
+            mb_enabled: false,
+            mb_crossovers_hz: [250.0, 4000.0],
+            mb_threshold_db: [-30.0, -28.0, -32.0],
+            mb_ratio: [2.5, 2.0, 3.0],
             comp_enabled: true,
             comp_threshold_db: -20.0,
             comp_ratio: 4.0,
@@ -134,6 +161,17 @@ impl Default for Params {
             limiter_enabled: true,
             limiter_ceiling_db: -1.0,
             output_gain_db: 0.0,
+        }
+    }
+}
+
+impl Params {
+    /// Réglages du compresseur multibande.
+    pub fn multiband(&self) -> crate::dsp::multiband::MultibandSettings {
+        crate::dsp::multiband::MultibandSettings {
+            crossovers_hz: self.mb_crossovers_hz,
+            threshold_db: self.mb_threshold_db,
+            ratio: self.mb_ratio,
         }
     }
 }

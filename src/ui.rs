@@ -19,7 +19,7 @@ enum Calib {
     Keyboard(Instant),
     Speech(Instant),
     Computing { rx: Receiver<CalibMsg>, progress: f32 },
-    Done { result: Box<CalibrationResult>, previous: Params, listening_new: bool },
+    Done { result: Box<CalibrationResult>, previous: Box<Params>, listening_new: bool },
     Failed(String),
 }
 
@@ -354,6 +354,7 @@ impl App {
         });
 
         noise_sections(ui, &mut p);
+        dereverb_section(ui, &mut p);
 
         section(ui, "De-esser", Some(&mut p.deesser_enabled), |ui| {
             ui.label(RichText::new("Adoucit les « s » et « ch » trop sifflants.").weak());
@@ -383,6 +384,9 @@ impl App {
                 });
             }
         });
+
+        dynamic_eq_section(ui, &mut p);
+        multiband_section(ui, &mut p);
 
         section(ui, "Compresseur", Some(&mut p.comp_enabled), |ui| {
             ui.label(RichText::new("Rend le volume régulier : les passages faibles et forts se rapprochent.").weak());
@@ -491,7 +495,7 @@ impl App {
                                 if let Err(msg) = calibrate::check(&r) {
                                     next = Some(Calib::Failed(msg.into()));
                                 } else {
-                                    let previous = self.settings.params.clone();
+                                    let previous = Box::new(self.settings.params.clone());
                                     apply = Some(r.params.clone());
                                     next = Some(Calib::Done { result: r, previous, listening_new: true });
                                 }
@@ -524,7 +528,7 @@ impl App {
                         }
                         if ui.selectable_label(!*listening_new, "Anciens réglages").clicked() {
                             *listening_new = false;
-                            apply = Some(previous.clone());
+                            apply = Some((**previous).clone());
                         }
                     });
                     ui.label(RichText::new("Astuce : dans Windows, coche « Écouter ce périphérique » sur CABLE Output pour t'entendre.").weak());
@@ -536,7 +540,7 @@ impl App {
                             next = Some(Calib::Idle);
                         }
                         if ui.button("Annuler").clicked() {
-                            apply = Some(previous.clone());
+                            apply = Some((**previous).clone());
                             next = Some(Calib::Idle);
                         }
                     });
@@ -606,6 +610,70 @@ fn noise_sections(ui: &mut egui::Ui, p: &mut Params) {
         )
         .on_hover_text(
             "Plus c'est haut, plus il faut être sûr que c'est de la voix. Trop haut : des mots sont coupés.",
+        );
+    });
+}
+
+/// Réglages de l'anti-réverbération.
+fn dereverb_section(ui: &mut egui::Ui, p: &mut Params) {
+    section(ui, "Anti-réverbération", Some(&mut p.dereverb_enabled), |ui| {
+        ui.label(
+            RichText::new("Retire l'écho de la pièce (voix lointaine, « salle de bain »). Ajoute 10 ms de retard.")
+                .weak(),
+        );
+        ui.add(egui::Slider::new(&mut p.dereverb_strength, 0.0..=1.0).text("Intensité"));
+        ui.add(egui::Slider::new(&mut p.dereverb_t60_s, 0.2..=1.5).text("Écho de la pièce").suffix(" s"))
+            .on_hover_text("Durée de l'écho : 0,3 s pour une chambre meublée, 1 s pour une pièce vide et carrelée.");
+    });
+}
+
+/// Réglages de l'égaliseur dynamique.
+fn dynamic_eq_section(ui: &mut egui::Ui, p: &mut Params) {
+    section(ui, "Égaliseur dynamique", Some(&mut p.deq_enabled), |ui| {
+        ui.label(
+            RichText::new("Adoucit le son « carton » et la dureté seulement quand ils débordent, pas en permanence.")
+                .weak(),
+        );
+        let names = ["Carton", "Dureté"];
+        for (b, name) in p.deq_bands.iter_mut().zip(names) {
+            ui.horizontal(|ui| {
+                ui.label(format!("{name:<7}"));
+                ui.add(egui::Slider::new(&mut b.threshold_db, -60.0..=0.0).text("Seuil").suffix(" dB"));
+                ui.add(egui::Slider::new(&mut b.max_cut_db, 0.0..=12.0).text("Max").suffix(" dB"));
+                ui.add(egui::Slider::new(&mut b.freq_hz, 150.0..=8000.0).text("Fréq.").suffix(" Hz").logarithmic(true));
+            });
+        }
+    });
+}
+
+/// Réglages du compresseur multibande.
+fn multiband_section(ui: &mut egui::Ui, p: &mut Params) {
+    section(ui, "Compresseur multibande", Some(&mut p.mb_enabled), |ui| {
+        ui.label(
+            RichText::new(
+                "Tient séparément les graves, les médiums et les aigus : une voix régulière sans l'étouffer.",
+            )
+            .weak(),
+        );
+        let names = ["Graves", "Médiums", "Aigus"];
+        for (i, name) in names.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(format!("{name:<8}"));
+                ui.add(egui::Slider::new(&mut p.mb_threshold_db[i], -50.0..=0.0).text("Seuil").suffix(" dB"));
+                ui.add(egui::Slider::new(&mut p.mb_ratio[i], 1.0..=8.0).text("Ratio").suffix(":1").logarithmic(true));
+            });
+        }
+        ui.add(
+            egui::Slider::new(&mut p.mb_crossovers_hz[0], 100.0..=600.0)
+                .text("Séparation graves / médiums")
+                .suffix(" Hz")
+                .logarithmic(true),
+        );
+        ui.add(
+            egui::Slider::new(&mut p.mb_crossovers_hz[1], 2000.0..=8000.0)
+                .text("Séparation médiums / aigus")
+                .suffix(" Hz")
+                .logarithmic(true),
         );
     });
 }

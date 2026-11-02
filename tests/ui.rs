@@ -405,3 +405,32 @@ fn the_voice_gate_can_be_switched_on_by_hand() {
     h.run_steps(2);
     assert!(h.state().settings().params.voice_gate_enabled);
 }
+
+#[test]
+fn the_multiband_compressor_can_be_switched_on_by_hand() {
+    let (mut h, _) = app(calibrated(), true, false);
+    assert!(!h.state().settings().params.mb_enabled);
+    // La section est plus bas dans la page, hors de l'écran : clic par
+    // l'accessibilité (comme un lecteur d'écran), sans position à l'écran.
+    h.get_by_label_contains("Compresseur multibande").click_accesskit();
+    h.run_steps(2);
+    assert!(h.state().settings().params.mb_enabled);
+}
+
+#[test]
+fn the_dynamic_eq_can_be_switched_on_by_hand() {
+    let (mut h, _) = app(calibrated(), true, false);
+    assert!(!h.state().settings().params.deq_enabled);
+    h.get_by_label_contains("Égaliseur dynamique").click_accesskit();
+    h.run_steps(2);
+    assert!(h.state().settings().params.deq_enabled);
+}
+
+#[test]
+fn the_dereverb_can_be_switched_on_by_hand() {
+    let (mut h, _) = app(calibrated(), true, false);
+    assert!(!h.state().settings().params.dereverb_enabled);
+    h.get_by_label_contains("Anti-réverbération").click_accesskit();
+    h.run_steps(2);
+    assert!(h.state().settings().params.dereverb_enabled);
+}

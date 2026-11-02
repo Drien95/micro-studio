@@ -16,12 +16,17 @@ Dans l'ordre utilisé par les ingés son :
 |---|---|---|
 | 1 | Gain d'entrée | Amène la voix au bon niveau |
 | 2 | Filtre passe-haut (24 dB/oct.) | Coupe grondements, vibrations, « boum » des plosives |
-| 3 | Noise gate | Coupe le micro quand tu ne parles pas |
-| 4 | Suppression de bruit IA (RNNoise) | Retire ventilateur, clavier, souffle |
-| 5 | De-esser | Adoucit les « s » sifflants |
-| 6 | Égaliseur 4 bandes | Corps, son « carton », présence, air |
-| 7 | Compresseur | Volume régulier |
-| 8 | Limiteur (anticipation 1,5 ms) | Aucune saturation possible |
+| 3 | Anti-bourdonnement (6 coupe-bandes) | Retire le « zzzz » du secteur ou de l'USB |
+| 4 | Noise gate | Coupe le micro quand tu ne parles pas |
+| 5 | Suppression de bruit IA (RNNoise ou DeepFilterNet3) | Retire ventilateur, clavier, souffle |
+| 6 | Porte vocale (option) | Coupe ce que l'IA n'entend pas comme de la voix |
+| 7 | Anti-réverbération (option) | Retire l'écho de la pièce |
+| 8 | De-esser | Adoucit les « s » sifflants |
+| 9 | Égaliseur 4 bandes | Corps, son « carton », présence, air |
+| 10 | Égaliseur dynamique (option) | Adoucit le son « carton » et la dureté quand ils débordent |
+| 11 | Compresseur multibande (option) | Graves, médiums et aigus tenus séparément |
+| 12 | Compresseur | Volume régulier |
+| 13 | Limiteur (anticipation 1,5 ms) | Aucune saturation possible |
 
 Latence totale : environ 10 ms de traitement + 20 ms de tampon.
 
@@ -77,6 +82,9 @@ mêmes vérifications que GitHub. Pour contribuer : [CONTRIBUTING.md](CONTRIBUTI
 - [x] DeepFilterNet en option « qualité maximale » (choisi par le calibrage s'il fait mieux)
 - [x] Notre propre moteur d'inférence DeepFilterNet, sans allocation, vérifié contre l'officiel
 - [x] Note de qualité perçue DNSMOS P.835 dans le calibrage (exécution maison)
+- [x] Compresseur multibande (3 bandes, Linkwitz-Riley)
+- [x] Égaliseur dynamique (2 bandes)
+- [x] Anti-réverbération
 - [x] Écoute de contrôle dans le casque depuis l'application (« M'écouter dans le casque »)
 - [ ] Icône dans la barre des tâches, lancement au démarrage de Windows
 - [x] Installation de VB-Cable en un clic depuis l'application

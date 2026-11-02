@@ -15,6 +15,21 @@ projet respecte le [versionnage sémantique](https://semver.org/lang/fr/)
   est partagé avec DNSMOS.
 
 ### Ajouté
+- Anti-réverbération (Lebart et al., 2001) : la réverbération tardive est
+  estimée bande par bande à partir de la puissance d'il y a 50 ms et de la
+  durée d'écho de la pièce, puis retirée par gain spectral avec plancher
+  (jusqu'à 15 dB). Transformée courte de 20 ms, reconstruction parfaite,
+  10 ms de retard, sans allocation. Le calibrage essaie de l'allumer et
+  affine l'intensité et la durée d'écho.
+- Égaliseur dynamique à 2 bandes (« carton » vers 400 Hz, dureté vers
+  3 kHz) : chaque bande ne baisse que de l'excès au-dessus de son seuil
+  (ratio 3, 6 dB au plus), avec une réduction exacte au centre de la bande.
+  Le calibrage essaie de l'allumer et affine ses seuils.
+- Compresseur multibande à 3 bandes (graves, médiums, aigus), entre
+  l'égaliseur et le compresseur : filtres de séparation Linkwitz-Riley
+  d'ordre 4 en phase (courbe plate à 0,1 dB près quand rien n'est compressé),
+  temps d'attaque et de relâchement adaptés à chaque bande. Réglable dans sa
+  section ; le calibrage essaie de l'allumer et affine ses seuils et ratios.
 - Calibrage : manche d'affinage après le tournoi (descente par coordonnées).
   Partant du meilleur réglage, chaque paramètre fin (seuil et relâchement de
   la porte, dosage du débruitage, de-esser, seuil et ratio du compresseur,

@@ -48,6 +48,12 @@ impl Biquad {
         self.set(f32::midpoint(1.0, c), -(1.0 + c), f32::midpoint(1.0, c), 1.0 + alpha, -2.0 * c, 1.0 - alpha);
     }
 
+    pub fn set_lowpass(&mut self, freq: f32, q: f32) {
+        let (c, s) = Self::w0(freq);
+        let alpha = Self::alpha(s, q);
+        self.set((1.0 - c) / 2.0, 1.0 - c, (1.0 - c) / 2.0, 1.0 + alpha, -2.0 * c, 1.0 - alpha);
+    }
+
     /// Passe-bande à gain unitaire au sommet.
     pub fn set_bandpass(&mut self, freq: f32, q: f32) {
         let (c, s) = Self::w0(freq);

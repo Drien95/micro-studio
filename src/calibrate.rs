@@ -597,11 +597,13 @@ pub fn run(rec: &Recording, mut progress: impl FnMut(f32)) -> CalibrationResult 
 /// Tours d'affinage après le tournoi.
 const REFINE_ROUNDS: usize = 3;
 /// Retouches essayées au plus par tour (voir [`refinements`]).
-const REFINE_MOVES: usize = 20;
+const REFINE_MOVES: usize = 33;
 
 /// Retouches d'un réglage : chaque paramètre fin, un peu plus haut puis un
-/// peu plus bas. `step` (1 au départ) règle l'ampleur des retouches. Les
-/// réglages de la porte vocale ne sont retouchés que si elle est active.
+/// peu plus bas. `step` (1 au départ) règle l'ampleur des retouches. Le
+/// compresseur multibande, l'égaliseur dynamique et l'anti-réverbération sont
+/// essayés allumés et éteints ; leurs réglages, comme ceux de la porte vocale, ne sont retouchés
+/// que s'ils sont actifs.
 pub fn refinements(p: &Params, step: f32) -> Vec<Params> {
     type Move = fn(&mut Params, f32);
     let moves: [Move; 8] = [
@@ -622,7 +624,64 @@ pub fn refinements(p: &Params, step: f32) -> Vec<Params> {
         |p, d| p.voice_gate_threshold = (p.voice_gate_threshold + 0.08 * d).clamp(0.1, 0.9),
         |p, d| p.voice_gate_hold_ms = (p.voice_gate_hold_ms + 80.0 * d).clamp(100.0, 800.0),
     ];
-    let active = moves.iter().chain(if p.voice_gate_enabled { &voice[..] } else { &[] });
+    let multiband: [Move; 3] = [
+        // Essayer d'allumer (ou d'éteindre) le compresseur multibande.
+        |p, d| {
+            if d > 0.0 {
+                p.mb_enabled = !p.mb_enabled;
+            }
+        },
+        |p, d| {
+            if p.mb_enabled {
+                for t in &mut p.mb_threshold_db {
+                    *t = (*t + 3.0 * d).clamp(-50.0, -5.0);
+                }
+            }
+        },
+        |p, d| {
+            if p.mb_enabled {
+                for r in &mut p.mb_ratio {
+                    *r = (*r * (1.0 + 0.25 * d)).clamp(1.2, 8.0);
+                }
+            }
+        },
+    ];
+    let dynamic_eq: [Move; 2] = [
+        |p, d| {
+            if d > 0.0 {
+                p.deq_enabled = !p.deq_enabled;
+            }
+        },
+        |p, d| {
+            if p.deq_enabled {
+                for b in &mut p.deq_bands {
+                    b.threshold_db = (b.threshold_db + 3.0 * d).clamp(-60.0, -5.0);
+                }
+            }
+        },
+    ];
+    let dereverb: [Move; 3] = [
+        |p, d| {
+            if d > 0.0 {
+                p.dereverb_enabled = !p.dereverb_enabled;
+            }
+        },
+        |p, d| {
+            if p.dereverb_enabled {
+                p.dereverb_strength = (p.dereverb_strength + 0.2 * d).clamp(0.1, 1.0);
+            }
+        },
+        |p, d| {
+            if p.dereverb_enabled {
+                p.dereverb_t60_s = (p.dereverb_t60_s * (1.0 + 0.4 * d)).clamp(0.2, 1.5);
+            }
+        },
+    ];
+    let active = moves.iter().chain(&multiband).chain(&dynamic_eq).chain(&dereverb).chain(if p.voice_gate_enabled {
+        &voice[..]
+    } else {
+        &[]
+    });
     let mut out = Vec::with_capacity(REFINE_MOVES);
     for m in active {
         for d in [step, -step] {

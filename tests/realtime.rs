@@ -65,7 +65,14 @@ fn test_signal() -> Vec<f32> {
 /// porte vocale compris), comme après un calibrage.
 fn all_settings() -> Vec<(&'static str, Params)> {
     let mut all = builtin_presets();
-    let mut full = Params { voice_gate_enabled: true, voice_gate_confirm_ms: 50.0, ..Params::default() };
+    let mut full = Params {
+        voice_gate_enabled: true,
+        voice_gate_confirm_ms: 50.0,
+        mb_enabled: true,
+        deq_enabled: true,
+        dereverb_enabled: true,
+        ..Params::default()
+    };
     full.notch_freqs_hz = [50.0, 100.0, 150.0, 1000.0, 2000.0, 4000.0];
     all.push(("Tout activé", full));
     all

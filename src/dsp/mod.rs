@@ -5,9 +5,12 @@
 pub mod biquad;
 pub mod deepfilter;
 pub mod denoise;
+pub mod dereverb;
 pub mod dfn;
+pub mod dynamic_eq;
 pub mod dynamics;
 pub mod loudness;
+pub mod multiband;
 pub mod resample;
 pub mod util;
 
@@ -16,7 +19,10 @@ use biquad::Biquad;
 use deepfilter::{DeepFilter, lsnr_to_voice_probability};
 use denoise::Denoiser;
 pub use denoise::FRAME;
+use dereverb::Dereverb;
+use dynamic_eq::DynamicEq;
 use dynamics::{Compressor, DeEsser, Gate, Limiter, VoiceGate};
+use multiband::Multiband;
 use util::{db_to_lin, lin_to_db};
 
 /// Mesures d'une trame, pour les vumètres et le calibrage.
@@ -50,8 +56,11 @@ pub struct Chain {
     denoiser: Denoiser,
     deep: DeepStage,
     voice_gate: VoiceGate,
+    dereverb: Dereverb,
     deesser: DeEsser,
     eq: [Biquad; 4],
+    dynamic_eq: DynamicEq,
+    multiband: Multiband,
     comp: Compressor,
     limiter: Limiter,
 }
@@ -72,8 +81,11 @@ impl Chain {
             denoiser: Denoiser::default(),
             deep,
             voice_gate: VoiceGate::default(),
+            dereverb: Dereverb::new(),
             deesser: DeEsser::default(),
             eq: [Biquad::default(); 4],
+            dynamic_eq: DynamicEq::default(),
+            multiband: Multiband::default(),
             comp: Compressor::default(),
             limiter: Limiter::default(),
         };
@@ -115,6 +127,7 @@ impl Chain {
             p.voice_gate_range_db,
         );
         self.gate.configure(p.gate_threshold_db, p.gate_attack_ms, p.gate_hold_ms, p.gate_release_ms, p.gate_range_db);
+        self.dereverb.configure(p.dereverb_t60_s, p.dereverb_strength);
         self.deesser.configure(p.deesser_freq_hz, p.deesser_threshold_db, p.deesser_max_reduction_db);
         for (f, b) in self.eq.iter_mut().zip(p.eq_bands.iter()) {
             match b.kind {
@@ -123,6 +136,8 @@ impl Chain {
                 EqKind::HighShelf => f.set_high_shelf(b.freq_hz, b.q, b.gain_db),
             }
         }
+        self.dynamic_eq.configure(&p.deq_bands);
+        self.multiband.configure(&p.multiband());
         self.comp.configure(
             p.comp_threshold_db,
             p.comp_ratio,
@@ -196,6 +211,9 @@ impl Chain {
             }
         }
         st.voice_gate_open = !(p.denoise_enabled && p.voice_gate_enabled) || self.voice_gate.is_open();
+        if p.dereverb_enabled {
+            self.dereverb.process(frame);
+        }
 
         let mut max_gr = 0f32;
         let mut max_dgr = 0f32;
@@ -210,6 +228,12 @@ impl Chain {
                 for f in &mut self.eq {
                     s = f.process(s);
                 }
+            }
+            if p.deq_enabled {
+                s = self.dynamic_eq.process(s);
+            }
+            if p.mb_enabled {
+                s = self.multiband.process(s);
             }
             if p.comp_enabled {
                 s = self.comp.process(s);
@@ -229,10 +253,14 @@ impl Chain {
     }
 
     /// Retard (en échantillons) de la chaîne hors temps réel avec ces réglages :
-    /// débruiteur et porte vocale. Sert à réaligner un rendu sur l'original.
+    /// débruiteur, porte vocale et anti-réverbération. Sert à réaligner un rendu sur l'original.
     pub fn latency_samples(p: &Params) -> usize {
-        if p.bypass || !p.denoise_enabled {
+        if p.bypass {
             return 0;
+        }
+        let dereverb = if p.dereverb_enabled { dereverb::LATENCY } else { 0 };
+        if !p.denoise_enabled {
+            return dereverb;
         }
         let denoise = match p.denoise_engine {
             DenoiseEngine::RnNoise => FRAME,
@@ -245,7 +273,7 @@ impl Chain {
         } else {
             0
         };
-        denoise + gate
+        denoise + gate + dereverb
     }
 
     /// Traite un enregistrement complet hors temps réel (utilisé par le calibrage).
@@ -437,6 +465,9 @@ mod tests {
         assert_eq!(Chain::latency_samples(&rn), FRAME);
         let gated = Params { voice_gate_enabled: true, voice_gate_confirm_ms: 30.0, ..rn };
         assert_eq!(Chain::latency_samples(&gated), 3 * FRAME);
+        let rev = Params { dereverb_enabled: true, ..gated };
+        assert_eq!(Chain::latency_samples(&rev), 4 * FRAME);
+        assert_eq!(Chain::latency_samples(&Params { denoise_enabled: false, ..rev }), FRAME);
         assert_eq!(Chain::latency_samples(&Params { bypass: true, ..p }), 0);
     }
 
