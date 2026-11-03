@@ -76,3 +76,6 @@ opt-level = 3
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+[target."cfg(windows)".dependencies]
+tray-icon = { version = "0.26.1", default-features = false }

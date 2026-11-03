@@ -502,3 +502,44 @@ fn blind_listening_keeps_the_chosen_finalist() {
     assert_eq!(h.state().settings().params, listened);
     assert!(!h.state().calibration_open());
 }
+
+/// Clé « Run » en mémoire, partagée avec le test pour lire ce qui est écrit.
+struct FakeRunKey(Arc<Mutex<Option<String>>>);
+
+impl micro_studio::autostart::RunKey for FakeRunKey {
+    fn get(&self) -> Option<String> {
+        self.0.lock().expect("verrou").clone()
+    }
+    fn set(&mut self, command: &str) -> Result<(), String> {
+        *self.0.lock().expect("verrou") = Some(command.to_owned());
+        Ok(())
+    }
+    fn remove(&mut self) -> Result<(), String> {
+        *self.0.lock().expect("verrou") = None;
+        Ok(())
+    }
+}
+
+#[test]
+fn launch_with_windows_writes_and_removes_the_run_entry() {
+    let (mut h, _) = app(calibrated(), true, false);
+    assert!(h.query_by_label("Lancer avec Windows").is_none(), "absent sans accès au registre");
+    let value = Arc::new(Mutex::new(None));
+    let exe = std::path::PathBuf::from(r"C:\Micro Studio\micro-studio.exe");
+    h.state_mut().set_run_key(Box::new(FakeRunKey(Arc::clone(&value))), exe.clone());
+    h.run_steps(2);
+    h.get_by_label("Lancer avec Windows").click();
+    h.run_steps(2);
+    assert_eq!(value.lock().expect("verrou").clone(), Some(micro_studio::autostart::command_for(&exe)));
+    h.get_by_label("Lancer avec Windows").click();
+    h.run_steps(2);
+    assert_eq!(*value.lock().expect("verrou"), None);
+}
+
+#[test]
+fn closing_the_window_quits_without_a_tray_icon() {
+    // Sans icône (tests, Linux, macOS), la croix doit fermer : sinon la
+    // fenêtre cachée ne pourrait plus être rouverte.
+    let (mut h, _) = app(calibrated(), true, false);
+    assert!(h.query_by_label("Garder actif à la fermeture").is_none());
+}

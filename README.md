@@ -30,6 +30,10 @@ Dans l'ordre utilisé par les ingés son :
 
 Latence totale : environ 10 ms de traitement + 20 ms de tampon.
 
+## En arrière-plan
+
+Sous Windows, la croix cache la fenêtre au lieu de quitter : le micro traité reste disponible pour Discord ou les jeux, et une icône apparaît près de l'horloge. Un clic dessus rouvre la fenêtre ; clic droit puis « Quitter » arrête tout. La case « Lancer avec Windows » démarre Micro Studio caché à l'ouverture de session.
+
 ## Le calibrage automatique
 
 1. **8 s de silence** : mesure du bruit de fond (pièce + micro) et recherche des bourdonnements (secteur 50 Hz et harmoniques, sifflement USB).

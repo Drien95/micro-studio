@@ -15,6 +15,7 @@
 //! ni prendre de verrou bloquant, ni faire d'entrée/sortie. Le test
 //! d'intégration `tests/realtime.rs` vérifie l'absence d'allocation.
 
+pub mod autostart;
 pub mod calibrate;
 pub mod dnsmos;
 pub mod dsp;
@@ -22,5 +23,6 @@ pub mod engine;
 pub mod monitor;
 pub mod params;
 pub mod settings;
+pub mod tray;
 pub mod ui;
 pub mod vbcable;

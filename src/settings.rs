@@ -13,6 +13,9 @@ pub struct Settings {
     pub params: Params,
     pub user_presets: Vec<(String, Params)>,
     pub calibrated: bool,
+    /// Fermer la fenêtre quitte vraiment, au lieu de la cacher près de
+    /// l'horloge en gardant le micro actif.
+    pub quit_on_close: bool,
 }
 
 /// Emplacement standard du fichier de réglages (`%APPDATA%` sous Windows).

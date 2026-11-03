@@ -1,10 +1,12 @@
 //! Interface graphique (egui).
 
+use crate::autostart::{self, RunKey};
 use crate::calibrate::{self, CalibrationResult};
 use crate::engine::{self, AudioBackend, CpalBackend, DeviceLists, Engine, INTERNAL_RATE, Shared};
 use crate::monitor::{self, CpalMonitor, Monitor, MonitorBackend, MonitorShared};
 use crate::params::{DenoiseEngine, EqKind, Params, builtin_presets};
 use crate::settings::Settings;
+use crate::tray::{self, Tray};
 use crate::vbcable::{self, Outcome, Step};
 use eframe::egui::{self, Color32, RichText};
 use std::path::PathBuf;
@@ -82,6 +84,12 @@ pub struct App {
     /// Volume du retour, en pourcentage.
     monitor_volume: f32,
     monitor_error: Option<String>,
+    /// Icône près de l'horloge (Windows) ; `None` : fermer quitte.
+    tray: Option<Tray>,
+    /// Clé « Run » du registre ; `None` : lancement avec Windows indisponible.
+    run_key: Option<Box<dyn RunKey>>,
+    /// Exécutable inscrit dans la clé « Run ».
+    exe: PathBuf,
 }
 
 /// Volume de départ du retour casque (pourcentage).
@@ -99,8 +107,26 @@ impl std::fmt::Debug for App {
 
 impl App {
     /// L'application réelle : carte son via cpal, réglages dans `%APPDATA%`.
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        Self::with_backend(Settings::load(), Box::new(CpalBackend), crate::settings::default_path())
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let mut app = Self::with_backend(Settings::load(), Box::new(CpalBackend), crate::settings::default_path());
+        app.tray = Tray::new(&cc.egui_ctx).ok();
+        if cfg!(windows)
+            && let Ok(exe) = std::env::current_exe()
+        {
+            let mut key: Box<dyn RunKey> = Box::new(autostart::Registry);
+            // Logiciel déplacé depuis l'activation : on suit le nouveau chemin.
+            if let Err(e) = autostart::refresh(key.as_mut(), &exe) {
+                app.error = Some(format!("Lancement avec Windows : {e}"));
+            }
+            app.set_run_key(key, exe);
+        }
+        app
+    }
+
+    /// Branche la clé « Run » du registre (les tests passent une fausse clé).
+    pub fn set_run_key(&mut self, key: Box<dyn RunKey>, exe: PathBuf) {
+        self.run_key = Some(key);
+        self.exe = exe;
     }
 
     /// Construit l'application avec un backend audio et un emplacement de
@@ -128,6 +154,9 @@ impl App {
             monitor_sink: None,
             monitor_volume: MONITOR_DEFAULT_VOLUME,
             monitor_error: None,
+            tray: None,
+            run_key: None,
+            exe: PathBuf::new(),
             vb_installer: Arc::new(|progress: &mut dyn FnMut(Step)| {
                 vbcable::install(&vbcable::PowerShell, &vbcable::default_work_dir(), vbcable::Arch::current(), progress)
             }),
@@ -383,7 +412,46 @@ impl App {
                 self.settings.user_presets.push((format!("Mes réglages {n}"), self.settings.params.clone()));
                 self.last_save = Some(Instant::now());
             }
+            self.startup_options(ui);
         });
+    }
+
+    /// Lancement avec Windows et comportement de la croix de fermeture.
+    fn startup_options(&mut self, ui: &mut egui::Ui) {
+        if let Some(key) = self.run_key.as_mut() {
+            ui.separator();
+            let mut on = autostart::is_enabled(key.as_ref());
+            if ui
+                .checkbox(&mut on, "Lancer avec Windows")
+                .on_hover_text("Démarre Micro Studio réduit près de l'horloge à l'ouverture de ta session.")
+                .changed()
+                && let Err(e) = autostart::set_enabled(key.as_mut(), &self.exe, on)
+            {
+                self.error = Some(format!("Lancement avec Windows : {e}"));
+            }
+        }
+        if self.tray.is_some() {
+            let mut keep = !self.settings.quit_on_close;
+            if ui
+                .checkbox(&mut keep, "Garder actif à la fermeture")
+                .on_hover_text("La croix cache la fenêtre : le micro traité reste disponible. Clic sur l'icône près de l'horloge pour la rouvrir, clic droit puis « Quitter » pour arrêter.")
+                .changed()
+            {
+                self.settings.quit_on_close = !keep;
+                self.last_save = Some(Instant::now());
+            }
+        }
+    }
+
+    /// La croix cache la fenêtre au lieu de quitter quand l'icône existe.
+    fn handle_close(&mut self, ctx: &egui::Context) {
+        let quit = self.tray.as_ref().is_some_and(|t| t.flags().quit_requested());
+        if ctx.input(|i| i.viewport().close_requested())
+            && tray::hide_instead_of_close(self.tray.is_some(), self.settings.quit_on_close, quit)
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
     }
 
     fn effects(&mut self, ui: &mut egui::Ui) {
@@ -1069,6 +1137,7 @@ impl App {
             });
         });
         self.calibration_window(&ctx);
+        self.handle_close(&ctx);
 
         if let Some(t) = self.last_save
             && t.elapsed() > Duration::from_millis(800)

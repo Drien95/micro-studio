@@ -9,6 +9,14 @@ projet respecte le [versionnage sémantique](https://semver.org/lang/fr/)
 ## [Non publié]
 
 ### Ajouté
+- Icône près de l'horloge (Windows) : la croix cache la fenêtre et le micro
+  traité reste actif ; clic sur l'icône pour la rouvrir, clic droit puis
+  « Quitter » pour arrêter. Case « Garder actif à la fermeture » pour revenir
+  à l'ancien comportement. Icône dessinée en code (`tray`).
+- Case « Lancer avec Windows » : entrée « Micro Studio » dans la clé Run de
+  l'utilisateur (sans droits administrateur, via `reg.exe`), démarrage caché
+  avec `--minimized` ; le chemin est remis à jour si le logiciel a été
+  déplacé (`autostart`).
 - Écoute à l'aveugle en fin de calibrage : les finalistes sont présentés sous
   les lettres A, B, C dans un ordre mélangé, plus « Anciens réglages » ; on
   garde celui qu'on préfère à l'oreille (le meilleur au score est appliqué
