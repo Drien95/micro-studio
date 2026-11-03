@@ -40,7 +40,7 @@ fn builtin_presets_have_unique_names_and_sane_values() {
     for (name, p) in &presets {
         assert!(p.limiter_ceiling_db <= 0.0, "{name}");
         assert!(p.comp_ratio >= 1.0, "{name}");
-        assert!((0.0..=1.0).contains(&p.denoise_mix), "{name}");
+        assert!((0.0..=100.0).contains(&p.denoise_limit_db), "{name}");
         assert!(p.gate_range_db <= 0.0, "{name}");
     }
 }

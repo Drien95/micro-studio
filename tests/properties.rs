@@ -23,7 +23,7 @@ fn eq_band() -> impl Strategy<Value = EqBand> {
 fn params() -> impl Strategy<Value = Params> {
     (
         (any::<bool>(), -20.0f32..36.0, any::<bool>(), 20.0f32..400.0, any::<bool>(), -90.0f32..0.0, -90.0f32..0.0),
-        (any::<bool>(), 0.0f32..1.0, any::<bool>(), 2000.0f32..12_000.0, -70.0f32..0.0, 0.0f32..20.0),
+        (any::<bool>(), 0.0f32..120.0, any::<bool>(), 2000.0f32..12_000.0, -70.0f32..0.0, 0.0f32..20.0),
         (any::<bool>(), [eq_band(), eq_band(), eq_band(), eq_band()]),
         (any::<bool>(), -60.0f32..0.0, 1.0f32..30.0, 0.1f32..200.0, 5.0f32..2000.0, 0.0f32..18.0, 0.0f32..30.0),
         (any::<bool>(), -20.0f32..0.0, -20.0f32..20.0),
@@ -37,7 +37,7 @@ fn params() -> impl Strategy<Value = Params> {
             gate_threshold_db: a.5,
             gate_range_db: a.6,
             denoise_enabled: b.0,
-            denoise_mix: b.1,
+            denoise_limit_db: b.1,
             deesser_enabled: b.2,
             deesser_freq_hz: b.3,
             deesser_threshold_db: b.4,

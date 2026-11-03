@@ -72,27 +72,28 @@ fn refinements_nudge_one_setting_at_a_time() {
     let r = refinements(&p, 1.0);
     assert_eq!(
         r.len(),
-        17,
-        "8 réglages fins dans les deux sens (sauf le débruitage et le ratio, déjà au maximum) + multibande, égaliseur dynamique, anti-réverbération"
+        18,
+        "8 réglages fins dans les deux sens (sauf le ratio, déjà au maximum) + multibande, égaliseur dynamique, anti-réverbération"
     );
     assert!(r.iter().all(|q| *q != p));
     let with_voice = Params { voice_gate_enabled: true, ..Params::default() };
-    assert_eq!(refinements(&with_voice, 1.0).len(), 21, "+ seuil et maintien de la porte vocale");
+    assert_eq!(refinements(&with_voice, 1.0).len(), 22, "+ seuil et maintien de la porte vocale");
     // Un pas plus petit retouche moins.
     let small = refinements(&p, 0.25);
     assert!(
         (small[0].gate_threshold_db - p.gate_threshold_db).abs() < (r[0].gate_threshold_db - p.gate_threshold_db).abs()
     );
     // Les bornes sont respectées.
-    assert!(r.iter().all(|q| (0.5..=1.0).contains(&q.denoise_mix)));
-    let half = Params { denoise_mix: 0.7, ..Params::default() };
+    let denoise: Vec<f32> = r.iter().map(|q| q.denoise_limit_db).filter(|&d| d < 100.0).collect();
+    assert_eq!(denoise, [60.0, 54.0], "« sans limite » ramené dans les bornes, puis 6 dB plus bas");
+    let half = Params { denoise_limit_db: 30.0, ..Params::default() };
     assert_eq!(refinements(&half, 1.0).len(), 18);
     let mb = Params { mb_enabled: true, ..Params::default() };
     let r = refinements(&mb, 1.0);
-    assert_eq!(r.len(), 21, "+ seuils et ratios du multibande");
+    assert_eq!(r.len(), 22, "+ seuils et ratios du multibande");
     assert!(r.iter().any(|q| !q.mb_enabled), "on essaie aussi de l'éteindre");
     let deq = Params { deq_enabled: true, ..Params::default() };
-    assert_eq!(refinements(&deq, 1.0).len(), 19, "+ seuils de l'égaliseur dynamique");
+    assert_eq!(refinements(&deq, 1.0).len(), 20, "+ seuils de l'égaliseur dynamique");
     let rev = Params { dereverb_enabled: true, ..Params::default() };
-    assert_eq!(refinements(&rev, 1.0).len(), 21, "+ intensité et durée de l'écho");
+    assert_eq!(refinements(&rev, 1.0).len(), 22, "+ intensité et durée de l'écho");
 }

@@ -23,6 +23,12 @@ projet respecte le [versionnage sémantique](https://semver.org/lang/fr/)
   d'emblée).
 
 ### Modifié
+- Débruitage dosé : l'« intensité » 0..1 devient une « réduction max » en dB
+  (règle `atten_lim` de DeepFilterNet, appliquée aussi à RNNoise). Le
+  calibrage la règle sur ce dont le micro a besoin (bruit amené à 50 dB sous
+  la voix, + 6 dB de marge, entre 12 et 60 dB) et chaque dB en trop coûte
+  0,3 point de score : moins de son « métallique ». Les anciens réglages
+  d'intensité repassent à « sans limite » (le calibrage les refixe).
 - Calibrage : DNSMOS ne départage plus que la propreté du fond (note BAK) ;
   la qualité de la voix (SIG) et la note globale ne comptent plus, car le
   réseau les estime mal sur une voix traitée. L'oreille tranche à la place.

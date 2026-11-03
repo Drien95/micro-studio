@@ -201,11 +201,11 @@ impl Chain {
 
         if p.denoise_enabled {
             st.vad = if let (DenoiseEngine::DeepFilter, DeepStage::Loaded(df)) = (p.denoise_engine, &mut self.deep) {
-                df.set_strength(p.denoise_mix);
+                df.set_atten_lim_db(p.denoise_limit_db);
                 lsnr_to_voice_probability(df.process(frame))
             } else {
                 // RNNoise, ou DeepFilterNet impossible à charger : RNNoise.
-                self.denoiser.process(frame, p.denoise_mix);
+                self.denoiser.process(frame, p.denoise_limit_db);
                 self.denoiser.vad()
             };
             // La porte vocale a besoin de la détection de voix du débruiteur.
@@ -381,14 +381,14 @@ mod tests {
         // sinusoïde propre ne doit pas créer d'annulation (filtre en peigne).
         let p = only(|p| {
             p.denoise_enabled = true;
-            p.denoise_mix = 0.5;
+            p.denoise_limit_db = 6.0206;
         });
         let x = sine(440.0, 0.3, 1.0);
         let out = Chain::render(&p, &x).0;
         let wet = Chain::render(
             &only(|p| {
                 p.denoise_enabled = true;
-                p.denoise_mix = 1.0;
+                p.denoise_limit_db = denoise::UNLIMITED_DB;
             }),
             &x,
         )
@@ -396,7 +396,7 @@ mod tests {
         let dry = Chain::render(
             &only(|p| {
                 p.denoise_enabled = true;
-                p.denoise_mix = 0.0;
+                p.denoise_limit_db = 0.0;
             }),
             &x,
         )

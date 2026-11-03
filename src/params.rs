@@ -59,7 +59,9 @@ pub struct Params {
     pub denoise_enabled: bool,
     pub denoise_engine: DenoiseEngine,
     /// 0 = signal d'origine, 1 = débruitage complet.
-    pub denoise_mix: f32,
+    /// Réduction maximale du bruit par le débruiteur (dB) ; 100 : sans limite.
+    /// Moins de réduction = voix plus naturelle, sans son « métallique ».
+    pub denoise_limit_db: f32,
 
     /// Porte vocale : coupe ce qui n'est pas de la voix d'après le réseau de
     /// neurones (touches de clavier, souris), même quand c'est fort.
@@ -130,7 +132,7 @@ impl Default for Params {
             gate_range_db: -40.0,
             denoise_enabled: true,
             denoise_engine: DenoiseEngine::RnNoise,
-            denoise_mix: 1.0,
+            denoise_limit_db: crate::dsp::denoise::UNLIMITED_DB,
             voice_gate_enabled: false,
             voice_gate_threshold: 0.5,
             voice_gate_confirm_ms: 30.0,
@@ -210,7 +212,7 @@ pub fn builtin_presets() -> Vec<(&'static str, Params)> {
 
     let light = Params {
         deesser_enabled: false,
-        denoise_mix: 0.7,
+        denoise_limit_db: 10.5,
         eq_enabled: false,
         comp_ratio: 2.5,
         comp_makeup_db: 2.0,

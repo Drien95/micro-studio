@@ -4,6 +4,18 @@ use nnnoiseless::DenoiseState;
 
 pub const FRAME: usize = DenoiseState::FRAME_SIZE; // 480 échantillons = 10 ms à 48 kHz
 
+/// Limite d'atténuation à partir de laquelle le débruiteur n'est plus bridé.
+pub const UNLIMITED_DB: f32 = 100.0;
+
+/// Part de signal d'origine à garder pour qu'un débruiteur n'atténue jamais le
+/// bruit de plus de `limit_db` (même règle que `atten_lim` de `DeepFilterNet`) :
+/// `sortie = débruité × (1 - part) + original × part`, `part = 10^(-limite/20)`.
+/// Brider la réduction évite le son « métallique » d'un débruitage trop poussé.
+pub fn dry_part(limit_db: f32) -> f32 {
+    let lim = if limit_db.is_finite() { limit_db.abs() } else { UNLIMITED_DB };
+    if lim >= UNLIMITED_DB { 0.0 } else { 10f32.powf(-lim / 20.0) }
+}
+
 pub struct Denoiser {
     state: Box<DenoiseState<'static>>,
     scratch_in: [f32; FRAME],
@@ -29,13 +41,14 @@ impl Default for Denoiser {
 }
 
 impl Denoiser {
-    /// Traite une trame de 480 échantillons en place. `mix` dans [0, 1].
-    pub fn process(&mut self, frame: &mut [f32; FRAME], mix: f32) {
+    /// Traite une trame de 480 échantillons en place, sans atténuer le bruit
+    /// de plus de `limit_db` (voir [`dry_part`]).
+    pub fn process(&mut self, frame: &mut [f32; FRAME], limit_db: f32) {
+        let mix = 1.0 - dry_part(limit_db);
         for (d, s) in self.scratch_in.iter_mut().zip(frame.iter()) {
             *d = s * 32768.0;
         }
         self.last_vad = self.state.process_frame(&mut self.scratch_out, &self.scratch_in);
-        let mix = mix.clamp(0.0, 1.0);
         for ((x, delayed), out) in frame.iter_mut().zip(self.dry_delay.iter_mut()).zip(self.scratch_out.iter()) {
             let wet = if self.first { 0.0 } else { out / 32768.0 };
             let dry = std::mem::replace(delayed, *x);
@@ -88,7 +101,7 @@ mod tests {
                 seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
                 *x = (seed >> 9) as f32 / (1u32 << 23) as f32 * 0.2 - 0.1;
             }
-            d.process(&mut f, 1.0);
+            d.process(&mut f, UNLIMITED_DB);
             assert!((0.0..=1.0).contains(&d.vad()));
             assert!(f.iter().all(|x| x.is_finite()));
         }
@@ -106,7 +119,7 @@ mod tests {
                 *x = (seed >> 9) as f32 / (1u32 << 23) as f32 * 0.02 - 0.01;
             }
             let e: f32 = f.iter().map(|x| x * x).sum();
-            d.process(&mut f, 1.0);
+            d.process(&mut f, UNLIMITED_DB);
             if k > 300 {
                 e_in += e;
                 e_out += f.iter().map(|x| x * x).sum::<f32>();
@@ -116,5 +129,14 @@ mod tests {
         // RNNoise est entraîné sur des bruits réels : un bruit blanc pur n'est que
         // légèrement atténué, mais il ne doit jamais être amplifié.
         assert!(reduction > 0.5, "réduction du bruit blanc : {reduction:.1} dB");
+    }
+
+    #[test]
+    fn dry_part_follows_the_attenuation_limit() {
+        assert!(dry_part(UNLIMITED_DB).abs() < f32::EPSILON, "sans limite : tout débruité");
+        assert!(dry_part(250.0).abs() < f32::EPSILON);
+        assert!((dry_part(0.0) - 1.0).abs() < f32::EPSILON, "0 dB : signal d'origine");
+        assert!((dry_part(20.0) - 0.1).abs() < 1e-6, "20 dB : 10 % d'origine");
+        assert!(dry_part(f32::NAN).abs() < f32::EPSILON, "réglage corrompu : sans limite");
     }
 }

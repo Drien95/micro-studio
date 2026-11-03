@@ -540,6 +540,6 @@ fn launch_with_windows_writes_and_removes_the_run_entry() {
 fn closing_the_window_quits_without_a_tray_icon() {
     // Sans icône (tests, Linux, macOS), la croix doit fermer : sinon la
     // fenêtre cachée ne pourrait plus être rouverte.
-    let (mut h, _) = app(calibrated(), true, false);
+    let (h, _) = app(calibrated(), true, false);
     assert!(h.query_by_label("Garder actif à la fermeture").is_none());
 }

@@ -418,8 +418,8 @@ pub fn propose(a: &Analysis) -> Params {
         *slot = peak.freq_hz;
     }
 
-    // Débruitage : toujours actif ; un peu de signal d'origine si le micro est déjà propre.
-    p.denoise_mix = if a.snr_db > 45.0 { 0.8 } else { 1.0 };
+    // Débruitage : toujours actif, mais pas plus fort que nécessaire.
+    p.denoise_limit_db = denoise_needed_db(a);
 
     // De-esser : n'agit que sur les 10 % de sifflantes les plus fortes.
     p.deesser_freq_hz = a.sibilance_freq_hz;
@@ -474,6 +474,8 @@ pub struct Layout {
     pub keyboard_frames: Range<usize>,
     /// Échantillons de la phase de lecture.
     pub speech_samples: Range<usize>,
+    /// Réduction de bruit suffisante pour ce micro (dB), voir [`denoise_needed_db`].
+    pub denoise_needed_db: f32,
 }
 
 impl Layout {
@@ -483,8 +485,32 @@ impl Layout {
         Self {
             keyboard_frames: kb_start.div_ceil(FRAME)..sp_start / FRAME,
             speech_samples: sp_start..sp_start + rec.speech.len(),
+            denoise_needed_db: 0.0,
         }
     }
+}
+
+/// Bruit résiduel visé sous la voix (dB) : au-delà, il n'est plus audible
+/// sous la parole (la porte de bruit s'occupe des silences).
+const DENOISE_TARGET_SNR_DB: f32 = 50.0;
+/// Bornes de la limite du débruiteur cherchée par le calibrage (dB).
+pub const DENOISE_MIN_DB: f32 = 12.0;
+pub const DENOISE_MAX_DB: f32 = 60.0;
+/// Coût (points de score) de chaque dB de débruitage au-delà du nécessaire :
+/// risque de son « métallique » que le score ne mesure pas directement.
+const OVERSUPPRESSION_WEIGHT: f32 = 0.3;
+
+/// Réduction de bruit suffisante pour amener le bruit de ce micro à
+/// `DENOISE_TARGET_SNR_DB` sous la voix, plus 6 dB de marge, bornée.
+pub fn denoise_needed_db(a: &Analysis) -> f32 {
+    let snr = if a.snr_db.is_finite() { a.snr_db } else { 0.0 };
+    (DENOISE_TARGET_SNR_DB - snr + 6.0).clamp(DENOISE_MIN_DB, DENOISE_MAX_DB)
+}
+
+/// Pénalité d'un débruitage plus fort que nécessaire (« sans limite » compte
+/// pour `DENOISE_MAX_DB`).
+pub fn oversuppression_penalty(limit_db: f32, needed_db: f32) -> f32 {
+    OVERSUPPRESSION_WEIGHT * (limit_db.min(DENOISE_MAX_DB) - needed_db).max(0.0)
 }
 
 /// Écart maximal compté pour le bruit (au-delà, l'oreille ne fait plus la différence).
@@ -594,7 +620,8 @@ pub fn run(rec: &Recording, mut progress: impl FnMut(f32)) -> CalibrationResult 
     full.extend_from_slice(&rec.silence);
     full.extend_from_slice(&rec.keyboard);
     full.extend_from_slice(&rec.speech);
-    let layout = Layout::of(rec);
+    let mut layout = Layout::of(rec);
+    layout.denoise_needed_db = denoise_needed_db(&analysis);
     let first_speech_frame = layout.speech_samples.start.div_ceil(FRAME);
     let gate_level = analysis.noise_floor_db + 6.0;
     let activity = speech_activity(&rec.speech).1;
@@ -693,7 +720,10 @@ pub fn refinements(p: &Params, step: f32) -> Vec<Params> {
     let moves: [Move; 8] = [
         |p, d| p.gate_threshold_db = (p.gate_threshold_db + 2.0 * d).clamp(-80.0, -10.0),
         |p, d| p.gate_release_ms = (p.gate_release_ms * (1.0 + 0.3 * d)).clamp(30.0, 600.0),
-        |p, d| p.denoise_mix = (p.denoise_mix + 0.1 * d).clamp(0.5, 1.0),
+        |p, d| {
+            p.denoise_limit_db =
+                (p.denoise_limit_db.min(DENOISE_MAX_DB) + 6.0 * d).clamp(DENOISE_MIN_DB, DENOISE_MAX_DB);
+        },
         |p, d| p.deesser_threshold_db = (p.deesser_threshold_db + 3.0 * d).clamp(-50.0, -5.0),
         |p, d| p.comp_threshold_db = (p.comp_threshold_db + 2.0 * d).clamp(-50.0, -5.0),
         |p, d| p.comp_ratio = (p.comp_ratio * (1.0 + 0.2 * d)).clamp(1.5, MAX_COMP_RATIO),
@@ -859,7 +889,10 @@ fn evaluate(mut p: Params, full: &[f32], mask: &[bool], layout: &Layout) -> (Par
     let correction =
         if lufs.is_finite() && lufs > crate::dsp::loudness::SILENT_LUFS { TARGET_LUFS - lufs } else { 0.0 };
     p.output_gain_db = (p.output_gain_db + correction).clamp(-MAX_OUTPUT_GAIN_DB, MAX_OUTPUT_GAIN_DB);
-    let s = score(&render_aligned(&p, full), mask, layout);
+    let mut s = score(&render_aligned(&p, full), mask, layout);
+    if p.denoise_enabled {
+        s.total -= oversuppression_penalty(p.denoise_limit_db, layout.denoise_needed_db);
+    }
     (p, s)
 }
 
@@ -956,6 +989,29 @@ mod tests {
         let syllables = (10.0 * e.log10()) as f32;
         assert!((syllables - m.level_db) > -0.5 && (syllables - m.level_db) < 2.5, "{syllables} / {m:?}");
         assert!(speech_activity(&[]).0.is_none());
+    }
+
+    #[test]
+    fn denoise_is_limited_to_what_the_microphone_needs() {
+        let noisy = Analysis { snr_db: 20.0, ..Analysis::default() };
+        let clean = Analysis { snr_db: 55.0, ..Analysis::default() };
+        assert!((denoise_needed_db(&noisy) - 36.0).abs() < 1e-4, "50 - 20 + 6 dB de marge");
+        assert!((denoise_needed_db(&clean) - DENOISE_MIN_DB).abs() < f32::EPSILON, "jamais moins de 12 dB");
+        let terrible = Analysis { snr_db: -10.0, ..Analysis::default() };
+        assert!((denoise_needed_db(&terrible) - DENOISE_MAX_DB).abs() < f32::EPSILON);
+        let broken = Analysis { snr_db: f32::NAN, ..Analysis::default() };
+        assert!(denoise_needed_db(&broken).is_finite());
+        assert!((propose(&noisy).denoise_limit_db - 36.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn only_extra_denoising_is_penalized() {
+        assert!(oversuppression_penalty(20.0, 30.0).abs() < f32::EPSILON, "moins que nécessaire : rien");
+        assert!((oversuppression_penalty(40.0, 30.0) - 3.0).abs() < 1e-5, "0,3 point par dB en trop");
+        assert!(
+            (oversuppression_penalty(100.0, 30.0) - oversuppression_penalty(DENOISE_MAX_DB, 30.0)).abs() < f32::EPSILON,
+            "« sans limite » compte pour 60 dB"
+        );
     }
 
     #[test]
@@ -1106,7 +1162,8 @@ mod tests {
     fn score_penalises_keyboard_leaks() {
         // 100 trames de « clavier » puis 200 trames de voix et de pauses.
         let mask: Vec<bool> = (0..300).map(|i| i >= 100 && i % 3 != 0).collect();
-        let layout = Layout { keyboard_frames: 0..100, speech_samples: 100 * FRAME..300 * FRAME };
+        let layout =
+            Layout { keyboard_frames: 0..100, speech_samples: 100 * FRAME..300 * FRAME, denoise_needed_db: 0.0 };
         let render = |keys: f32| -> Vec<f32> {
             (0..300)
                 .flat_map(|i| {

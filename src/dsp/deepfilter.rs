@@ -6,22 +6,11 @@
 //! chargement, il tourne directement dans le callback audio.
 
 use super::FRAME;
+use super::denoise::UNLIMITED_DB;
 use super::dfn::{DfnEngine, LATENCY};
 
 /// Retard propre au modèle (recouvrement de la STFT + 2 trames d'anticipation).
 pub const MODEL_LATENCY_MS: f32 = LATENCY as f32 * 1000.0 / 48_000.0;
-
-/// Atténuation maximale (dB) au-delà de laquelle le modèle n'est plus bridé.
-const UNLIMITED_DB: f32 = 100.0;
-/// Atténuation maximale (dB) quand l'intensité vaut un peu moins de 1.
-const LIMITED_MAX_DB: f32 = 60.0;
-
-/// Convertit l'intensité de l'interface (0..1) en atténuation maximale (dB) :
-/// 1 = sans limite, 0,5 = 30 dB, 0 = aucun effet.
-pub fn strength_to_atten_lim_db(strength: f32) -> f32 {
-    let s = if strength.is_finite() { strength.clamp(0.0, 1.0) } else { 1.0 };
-    if s >= 0.999 { UNLIMITED_DB } else { s * LIMITED_MAX_DB }
-}
 
 /// Estime une probabilité de voix (0..1) à partir du rapport signal/bruit
 /// local (dB) que calcule le modèle : -5 dB ou moins = bruit, 15 dB ou plus =
@@ -47,9 +36,10 @@ impl DeepFilter {
         Ok(Self { engine: Box::new(DfnEngine::new()?), input: [0.0; FRAME], atten_lim_db: UNLIMITED_DB })
     }
 
-    /// Règle l'intensité (0..1), voir [`strength_to_atten_lim_db`].
-    pub fn set_strength(&mut self, strength: f32) {
-        let db = strength_to_atten_lim_db(strength);
+    /// Atténuation maximale du bruit (dB) ; [`super::denoise::UNLIMITED_DB`]
+    /// ou plus : sans limite.
+    pub fn set_atten_lim_db(&mut self, db: f32) {
+        let db = if db.is_finite() { db.abs().min(UNLIMITED_DB) } else { UNLIMITED_DB };
         if (db - self.atten_lim_db).abs() > f32::EPSILON {
             self.atten_lim_db = db;
             self.engine.set_atten_lim(db);
@@ -77,12 +67,7 @@ mod tests {
     }
 
     #[test]
-    fn strength_maps_to_attenuation_limit() {
-        assert!((strength_to_atten_lim_db(1.0) - UNLIMITED_DB).abs() < f32::EPSILON);
-        assert!((strength_to_atten_lim_db(0.5) - 30.0).abs() < 1e-4);
-        assert!(strength_to_atten_lim_db(0.0).abs() < f32::EPSILON);
-        assert!((strength_to_atten_lim_db(f32::NAN) - UNLIMITED_DB).abs() < f32::EPSILON);
-        assert!((strength_to_atten_lim_db(7.0) - UNLIMITED_DB).abs() < f32::EPSILON);
+    fn model_latency_is_30_ms() {
         assert!((MODEL_LATENCY_MS - 30.0).abs() < 1e-3);
     }
 
@@ -127,10 +112,21 @@ mod tests {
     }
 
     #[test]
-    fn strength_zero_leaves_the_signal_untouched_and_nan_is_silenced() {
+    fn limit_caps_the_reduction() {
+        let x = noise(SAMPLE_RATE as usize * 2, 0.05);
+        let mut df = DeepFilter::new().expect("modèle embarqué");
+        df.set_atten_lim_db(12.0);
+        let (out, _) = run(&mut df, &x);
+        let half = out.len() / 2;
+        let reduction = rms_db(&x[half..]) - rms_db(&out[half..]);
+        assert!(reduction <= 12.5 && reduction > 6.0, "réduction {reduction:.1} dB pour 12 dB permis");
+    }
+
+    #[test]
+    fn zero_limit_leaves_the_signal_untouched_and_nan_is_silenced() {
         let mut x = noise(SAMPLE_RATE as usize, 0.05);
         let mut df = DeepFilter::new().expect("modèle embarqué");
-        df.set_strength(0.0);
+        df.set_atten_lim_db(0.0);
         let (out, _) = run(&mut df, &x);
         let half = out.len() / 2;
         assert!((rms_db(&out[half..]) - rms_db(&x[half..])).abs() < 1.0);

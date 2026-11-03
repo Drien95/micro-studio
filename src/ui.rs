@@ -731,7 +731,12 @@ fn noise_sections(ui: &mut egui::Ui, p: &mut Params) {
                 "Plus efficace sur le clavier et les bruits brefs, son plus naturel dans les aigus. 30 ms de retard.",
             );
         });
-        ui.add(egui::Slider::new(&mut p.denoise_mix, 0.0..=1.0).text("Intensité"));
+        ui.add(
+            egui::Slider::new(&mut p.denoise_limit_db, 0.0..=crate::dsp::denoise::UNLIMITED_DB)
+                .text("Réduction max")
+                .custom_formatter(|v, _| if v >= 99.5 { "sans limite".to_owned() } else { format!("{v:.0} dB") }),
+        )
+        .on_hover_text("Le bruit n'est jamais baissé de plus que ça. Moins = voix plus naturelle, sans son « métallique ». Le calibrage choisit juste ce qu'il faut pour ton micro.");
         ui.checkbox(&mut p.voice_gate_enabled, "Couper tout ce qui n'est pas de la voix (clavier, souris)")
             .on_hover_text(
                 "Le réseau de neurones ferme le micro quand il n'entend pas de voix, même si le bruit est fort.",
