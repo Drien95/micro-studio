@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: windows-latest
@@ -23,9 +27,22 @@ jobs:
         run: |
           version=$(grep -m1 '^version' Cargo.toml | cut -d '"' -f2)
           test "v$version" = "$GITHUB_REF_NAME" || { echo "Tag $GITHUB_REF_NAME ≠ version v$version"; exit 1; }
-      - name: Tests
+      # Les tests tournent déjà dans le workflow CI (3 systèmes) : ici on ne
+      # fait que l'exécutable. LTO complet seulement pour une version publiée ;
+      # sur une pull request, compilation rapide (même code, un peu moins
+      # optimisé), pour pouvoir l'essayer sans attendre.
+      - name: Compilation rapide (pull request, branche)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        env:
+          CARGO_INCREMENTAL: 0
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
+        run: cargo build --release --locked
+      - name: Tests de la version publiée (LTO complet)
+        if: startsWith(github.ref, 'refs/tags/v')
         run: cargo test --release --locked
-      - name: Compilation
+      - name: Compilation de la version publiée (LTO complet)
+        if: startsWith(github.ref, 'refs/tags/v')
         run: cargo build --release --locked
       - uses: actions/upload-artifact@v4
         with:

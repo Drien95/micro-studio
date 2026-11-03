@@ -17,6 +17,18 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  # CI : la compilation incrémentale ne sert à rien sur une machine neuve et
+  # alourdit le cache.
+  CARGO_INCREMENTAL: 0
+  # Profil « rapide » pour les tests : le traitement audio (DeepFilterNet,
+  # DNSMOS, calibrage) est 10 à 20 fois plus lent sans optimisation. On
+  # compile en --release mais sans LTO et en parallèle (16 unités), avec les
+  # vérifications de débordement et les debug_assert! gardées. Le LTO complet
+  # est réservé à l'exécutable publié (workflow Windows, sur les tags).
+  CARGO_PROFILE_RELEASE_LTO: "false"
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
+  CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS: "true"
+  CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS: "true"
 
 jobs:
   fmt:
@@ -61,8 +73,11 @@ jobs:
       - name: Dépendances système (ALSA)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
-      - run: cargo test --locked --all-targets
-      - run: cargo test --locked --doc
+      # nextest lance tous les tests en parallèle, binaires de test compris
+      # (cargo test les enchaîne : la bibliothèque puis le calibrage, 80 s + 110 s).
+      - uses: taiki-e/install-action@nextest
+      - run: cargo nextest run --release --locked --all-targets --no-fail-fast
+      - run: cargo test --release --locked --doc
 
   msrv:
     name: Version minimale de Rust (MSRV)
@@ -119,7 +134,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cargo llvm-cov --locked --all-targets --summary-only \
+          cargo llvm-cov --release --locked --all-targets --summary-only \
             --ignore-filename-regex 'src/main\.rs' --fail-under-lines 85 | tee coverage.txt
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           cat coverage.txt >> "$GITHUB_STEP_SUMMARY"
