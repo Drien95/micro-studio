@@ -13,6 +13,7 @@ pub mod limiter;
 pub mod loudness;
 pub mod multiband;
 pub mod resample;
+pub mod speech_level;
 pub mod util;
 
 use crate::params::{DenoiseEngine, EqKind, MAX_NOTCHES, Params};

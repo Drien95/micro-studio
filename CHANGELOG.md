@@ -9,6 +9,11 @@ projet respecte le [versionnage sémantique](https://semver.org/lang/fr/)
 ## [Non publié]
 
 ### Modifié
+- Calibrage : niveau de la voix mesuré selon l'UIT-T P.56 méthode B (voix
+  active : enveloppe de 30 ms, maintien de 200 ms, marge de 15,9 dB, module
+  `dsp::speech_level`) au lieu de la médiane des trames à 12 dB au-dessus du
+  bruit. Le masque « voix » du tournoi en découle, croisé avec le détecteur
+  de voix de RNNoise (élargi de 30 ms) pour écarter les bruits forts.
 - Limiteur « true peak » (UIT-R BS.1770-4, annexe 2) : la crête est mesurée
   sur le signal suréchantillonné 4 fois (filtre de 48 coefficients), donc
   aussi entre les échantillons, et le plafond s'exprime en dBTP (-1 dBTP par

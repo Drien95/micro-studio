@@ -5,7 +5,9 @@
 //! meilleur score.
 
 use crate::dnsmos::{Dnsmos, Mos};
+use crate::dsp::denoise::Denoiser;
 use crate::dsp::loudness::integrated_lufs;
+use crate::dsp::speech_level::{self, ActiveSpeech};
 use crate::dsp::util::{SAMPLE_RATE, db_to_lin, lin_to_db};
 use crate::dsp::{Chain, FRAME};
 use crate::params::{DenoiseEngine, MAX_NOTCHES, Params};
@@ -229,15 +231,74 @@ pub fn detect_tonal_noise(silence: &[f32]) -> Vec<TonalPeak> {
     found
 }
 
+/// Seuil du détecteur de voix de RNNoise pour une trame « parlée ».
+const VAD_SPEECH: f32 = 0.5;
+/// Élargissement du détecteur de voix (trames de chaque côté) : il hésite
+/// sur les consonnes et les fins de mots.
+const VAD_DILATION: usize = 3;
+
+/// Activité vocale échantillon par échantillon : méthode B de l'UIT-T P.56
+/// (enveloppe, seuil adaptatif, maintien de 200 ms), croisée avec le
+/// détecteur de voix de RNNoise pour écarter les bruits forts qui ne sont
+/// pas de la voix. Si RNNoise ne reconnaît presque rien (voix atypique,
+/// signal de test), P.56 seule fait foi.
+pub fn speech_activity(speech: &[f32]) -> (Option<ActiveSpeech>, Vec<bool>) {
+    let Some((m, p56)) = speech_level::measure(speech) else {
+        return (None, vec![false; speech.len()]);
+    };
+    let mut den = Denoiser::default();
+    let raw: Vec<bool> = speech
+        .as_chunks::<FRAME>()
+        .0
+        .iter()
+        .map(|c| {
+            let mut f = *c;
+            den.process(&mut f, 1.0);
+            den.vad() >= VAD_SPEECH
+        })
+        .collect();
+    let vad: Vec<bool> = (0..raw.len())
+        .map(|i| raw[i.saturating_sub(VAD_DILATION)..(i + VAD_DILATION + 1).min(raw.len())].iter().any(|&v| v))
+        .collect();
+    let crossed: Vec<bool> =
+        p56.iter().enumerate().map(|(i, &a)| a && vad.get(i / FRAME).copied().unwrap_or(true)).collect();
+    let (n_p56, n_both) = (p56.iter().filter(|&&a| a).count(), crossed.iter().filter(|&&a| a).count());
+    let mask = if n_both as f32 >= 0.3 * n_p56 as f32 { crossed } else { p56 };
+    (Some(m), mask)
+}
+
+/// Masque par trame de 10 ms à partir d'un masque par échantillon qui
+/// commence à l'échantillon `start` : une trame est active si plus de la
+/// moitié de ses échantillons le sont.
+pub fn frames_from_samples(mask: &[bool], start: usize, frames: usize) -> Vec<bool> {
+    (0..frames)
+        .map(|i| {
+            let (a, b) = ((i * FRAME).saturating_sub(start), ((i + 1) * FRAME).saturating_sub(start));
+            if (i + 1) * FRAME <= start || a >= mask.len() {
+                return false;
+            }
+            let part = &mask[a..b.min(mask.len())];
+            part.iter().filter(|&&m| m).count() * 2 > FRAME
+        })
+        .collect()
+}
+
 pub fn analyze(silence: &[f32], keyboard: &[f32], speech: &[f32]) -> Analysis {
     let sil = frame_rms_db(silence);
     let sp = frame_rms_db(speech);
     let noise_floor = percentile(&sil, 0.5);
 
-    // Trames « parlées » : au moins 12 dB au-dessus du bruit de fond.
-    let active: Vec<bool> = sp.iter().map(|&l| l > noise_floor + 12.0).collect();
+    // Trames « parlées » : activité vocale P.56 croisée avec le détecteur de
+    // voix de RNNoise, et au moins 6 dB au-dessus du bruit de fond.
+    let (measured, activity) = speech_activity(speech);
+    let active: Vec<bool> = frames_from_samples(&activity, 0, sp.len())
+        .into_iter()
+        .zip(&sp)
+        .map(|(a, &l)| a && l > noise_floor + 6.0)
+        .collect();
     let active_levels: Vec<f32> = sp.iter().zip(&active).filter(|(_, a)| **a).map(|(l, _)| *l).collect();
-    let speech_level = percentile(&active_levels, 0.5);
+    // Niveau de voix active (UIT-T P.56) ; à défaut, médiane des trames actives.
+    let speech_level = measured.map_or_else(|| percentile(&active_levels, 0.5), |m| m.level_db);
     let peak = speech.iter().fold(0f32, |m, s| m.max(s.abs()));
     let clipped = speech.iter().filter(|s| s.abs() > 0.98).count() as f32 / speech.len().max(1) as f32;
 
@@ -532,9 +593,15 @@ pub fn run(rec: &Recording, mut progress: impl FnMut(f32)) -> CalibrationResult 
     full.extend_from_slice(&rec.speech);
     let layout = Layout::of(rec);
     let first_speech_frame = layout.speech_samples.start.div_ceil(FRAME);
-    let gate_level = analysis.noise_floor_db + 12.0;
-    let mask: Vec<bool> =
-        frame_rms_db(&full).iter().enumerate().map(|(i, &l)| i >= first_speech_frame && l > gate_level).collect();
+    let gate_level = analysis.noise_floor_db + 6.0;
+    let activity = speech_activity(&rec.speech).1;
+    let levels = frame_rms_db(&full);
+    let mask: Vec<bool> = frames_from_samples(&activity, layout.speech_samples.start, levels.len())
+        .into_iter()
+        .zip(&levels)
+        .enumerate()
+        .map(|(i, (a, &l))| a && i >= first_speech_frame && l > gate_level)
+        .collect();
 
     let baseline = Params { bypass: true, input_gain_db: base.input_gain_db, ..Params::default() };
     let baseline_out = Chain::render(&baseline, &full).0;
@@ -854,6 +921,36 @@ mod tests {
 
     fn tone(freq: f32, amp: f32, n: usize) -> Vec<f32> {
         (0..n).map(|i| amp * (2.0 * std::f32::consts::PI * freq * i as f32 / SAMPLE_RATE).sin()).collect()
+    }
+
+    #[test]
+    fn frame_mask_follows_the_sample_mask_with_an_offset() {
+        // Voix active sur les échantillons 480..1440 d'une partie qui commence
+        // à l'échantillon 960 de l'enregistrement complet.
+        let mut m = vec![false; 2_400];
+        m[480..1_440].fill(true);
+        let f = frames_from_samples(&m, 960, 8);
+        assert_eq!(f, [false, false, false, true, true, false, false, false]);
+        assert_eq!(frames_from_samples(&[], 0, 2), [false, false]);
+    }
+
+    #[test]
+    fn speech_activity_finds_the_voice_and_its_level() {
+        let (silence, speech) = synthetic_voice(4.0, -60.0, -25.0);
+        let x: Vec<f32> = [&silence[..], &speech[..]].concat();
+        let (m, mask) = speech_activity(&x);
+        let m = m.expect("voix");
+        // Le silence du début n'est pas de la voix ; la lecture, si.
+        let quiet = mask[..silence.len() - 9_600].iter().filter(|&&a| a).count();
+        let voiced = mask[silence.len()..].iter().filter(|&&a| a).count();
+        assert_eq!(quiet, 0);
+        assert!(voiced as f32 > 0.6 * speech.len() as f32, "{voiced}");
+        // Niveau des syllabes (2/3 du temps) : le maintien de 200 ms compte
+        // aussi les pauses de 100 ms entre elles, d'où au plus 1,8 dB de moins.
+        let e: f64 = speech.iter().map(|&v| f64::from(v) * f64::from(v)).sum::<f64>() * 1.5 / speech.len() as f64;
+        let syllables = (10.0 * e.log10()) as f32;
+        assert!((syllables - m.level_db) > -0.5 && (syllables - m.level_db) < 2.5, "{syllables} / {m:?}");
+        assert!(speech_activity(&[]).0.is_none());
     }
 
     #[test]
