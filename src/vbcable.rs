@@ -1,0 +1,674 @@
+//! Installation de VB-Cable « en un clic » depuis Micro Studio.
+//!
+//! VB-Cable (VB-Audio, donationware) crée le couple *CABLE Input* (sortie où
+//! Micro Studio envoie la voix traitée) / *CABLE Output* (micro à choisir dans
+//! Discord, OBS…). VB-Audio autorise sa distribution avec une application à
+//! condition de le présenter comme un produit VB-Audio et de rappeler qu'il
+//! est un donationware : voir [`CREDIT`] et
+//! <https://vb-audio.com/Services/licensing.htm>.
+//!
+//! Déroulé de [`install`] :
+//! 1. téléchargement du paquet officiel et décompression dans un dossier
+//!    temporaire (PowerShell) ;
+//! 2. choix du programme d'installation adapté au processeur ([`pick_setup`]) ;
+//! 3. vérification de la signature Authenticode : il doit être signé et
+//!    valide, par VB-Audio ([`is_trusted_signature`]) ;
+//! 4. lancement en administrateur (fenêtre UAC de Windows), l'utilisateur
+//!    clique sur « Install Driver ».
+//!
+//! Toute la logique passe par le trait [`Shell`] : les tests remplacent
+//! PowerShell par un faux et vérifient chaque cas d'erreur sans réseau.
+
+use std::fmt;
+use std::path::{Path, PathBuf};
+
+/// Paquet officiel (page <https://vb-audio.com/Cable/>, version d'octobre 2024).
+pub const PACKAGE_URL: &str = "https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip";
+
+/// Mention exigée par VB-Audio quand VB-Cable est proposé par une autre application.
+pub const CREDIT: &str =
+    "VB-CABLE est un donationware de VB-Audio (www.vb-cable.com) : toutes les participations sont les bienvenues.";
+
+/// Page où l'utilisateur peut soutenir VB-Audio.
+pub const ORIGIN_URL: &str = "https://www.vb-cable.com";
+
+/// Architecture du processeur, pour choisir le bon programme d'installation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arch {
+    X86,
+    X64,
+    Arm64,
+}
+
+impl Arch {
+    /// Architecture pour laquelle Micro Studio a été compilé.
+    #[must_use]
+    pub fn current() -> Self {
+        match std::env::consts::ARCH {
+            "x86" => Self::X86,
+            "aarch64" => Self::Arm64,
+            _ => Self::X64,
+        }
+    }
+}
+
+/// Étapes affichées pendant l'installation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    Downloading,
+    Verifying,
+    /// Le programme de VB-Audio est ouvert : l'utilisateur doit cliquer sur
+    /// « Install Driver ».
+    WaitingForSetup,
+}
+
+impl Step {
+    /// Texte pour l'interface.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Downloading => "Téléchargement de VB-Cable…",
+            Self::Verifying => "Vérification de la signature de VB-Audio…",
+            Self::WaitingForSetup => "Dans la fenêtre de VB-Audio, clique sur « Install Driver », puis ferme-la.",
+        }
+    }
+}
+
+/// Résultat d'une tentative d'installation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    /// Le programme de VB-Audio s'est terminé normalement.
+    Finished,
+    /// L'utilisateur a refusé l'autorisation administrateur.
+    Cancelled,
+    /// Échec, avec un message lisible.
+    Failed(String),
+}
+
+impl fmt::Display for Outcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Finished => f.write_str("Installation de VB-Cable terminée."),
+            Self::Cancelled => f.write_str("Installation annulée : l'autorisation administrateur a été refusée."),
+            Self::Failed(msg) => write!(f, "Installation de VB-Cable impossible : {msg}"),
+        }
+    }
+}
+
+/// Accès au système, remplacé par un faux dans les tests.
+pub trait Shell {
+    /// Exécute un script PowerShell ; `Ok(sortie standard)` si le code de
+    /// sortie vaut 0, sinon `Err((code, message))`.
+    ///
+    /// # Errors
+    /// Code de sortie non nul ou PowerShell introuvable.
+    fn run(&self, script: &str) -> Result<String, (i32, String)>;
+
+    /// Noms des fichiers d'un dossier (récursivement, chemins relatifs).
+    ///
+    /// # Errors
+    /// Dossier illisible.
+    fn list_files(&self, dir: &Path) -> std::io::Result<Vec<String>>;
+}
+
+/// Code de sortie du script de lancement quand l'UAC est refusée.
+const EXIT_CANCELLED: i32 = 3;
+
+/// Installe VB-Cable ; `progress` est appelé à chaque nouvelle étape.
+pub fn install(shell: &dyn Shell, work_dir: &Path, arch: Arch, progress: &mut dyn FnMut(Step)) -> Outcome {
+    progress(Step::Downloading);
+    if let Err((_, msg)) = shell.run(&download_script(PACKAGE_URL, work_dir)) {
+        return Outcome::Failed(format!("téléchargement échoué ({}).", first_line(&msg)));
+    }
+
+    let files = match shell.list_files(work_dir) {
+        Ok(files) => files,
+        Err(e) => return Outcome::Failed(format!("dossier temporaire illisible ({e}).")),
+    };
+    let Some(setup) = pick_setup(&files, arch) else {
+        return Outcome::Failed("programme d'installation introuvable dans le paquet de VB-Audio.".into());
+    };
+    let setup = work_dir.join(setup);
+
+    progress(Step::Verifying);
+    match shell.run(&signature_script(&setup)) {
+        Ok(out) if is_trusted_signature(&out) => {}
+        Ok(out) => {
+            return Outcome::Failed(format!(
+                "signature non reconnue ({}), installation bloquée par sécurité.",
+                first_line(&out)
+            ));
+        }
+        Err((_, msg)) => return Outcome::Failed(format!("vérification impossible ({}).", first_line(&msg))),
+    }
+
+    progress(Step::WaitingForSetup);
+    match shell.run(&launch_script(&setup)) {
+        Ok(_) => Outcome::Finished,
+        Err((EXIT_CANCELLED, _)) => Outcome::Cancelled,
+        Err((_, msg)) => Outcome::Failed(format!("le programme de VB-Audio a échoué ({}).", first_line(&msg))),
+    }
+}
+
+/// Choisit le programme d'installation adapté parmi les fichiers du paquet.
+///
+/// Le paquet contient `VBCABLE_Setup.exe` (32 bits), `VBCABLE_Setup_x64.exe`
+/// et, depuis la version 45, une variante ARM64 : on cherche d'abord la
+/// variante exacte, puis la version 32 bits en dernier recours sur x86.
+#[must_use]
+pub fn pick_setup(files: &[String], arch: Arch) -> Option<String> {
+    let setups: Vec<&String> = files
+        .iter()
+        .filter(|f| {
+            let name = file_name(f).to_ascii_lowercase();
+            name.starts_with("vbcable_setup")
+                && Path::new(&name).extension().is_some_and(|e| e.eq_ignore_ascii_case("exe"))
+        })
+        .collect();
+    let has = |suffix: &str| {
+        setups
+            .iter()
+            .find(|f| file_name(f).to_ascii_lowercase().trim_end_matches(".exe").ends_with(suffix))
+            .map(|f| (*f).clone())
+    };
+    match arch {
+        Arch::X64 => has("_x64"),
+        Arch::Arm64 => has("_arm64").or_else(|| has("_a64")),
+        Arch::X86 => {
+            setups.iter().find(|f| file_name(f).eq_ignore_ascii_case("vbcable_setup.exe")).map(|f| (*f).clone())
+        }
+    }
+}
+
+/// Vrai si la sortie du script de vérification de signature décrit une
+/// signature valide de VB-Audio.
+///
+/// Format attendu : `Statut|Sujet du certificat`. Le certificat EV de
+/// VB-Audio (vérifié sur `VBCABLE_Setup_x64.exe` du Pack45) a pour sujet
+/// `CN=BUREL VINCENT Entrepreneur individuel, O=BUREL VINCENT Entrepreneur
+/// individuel, …, SERIALNUMBER=423 734 177, …` : on exige un statut `Valid`
+/// (chaîne de confiance Windows) et l'identité de l'éditeur, par son numéro
+/// d'entreprise (SIREN, stable d'un renouvellement à l'autre) ou son nom.
+#[must_use]
+pub fn is_trusted_signature(output: &str) -> bool {
+    let line = first_line(output);
+    let Some((status, subject)) = line.split_once('|') else {
+        return false;
+    };
+    let subject = subject.to_ascii_lowercase();
+    let publisher = subject.contains("serialnumber=423 734 177")
+        || ["burel vincent", "vincent burel", "vb-audio"].iter().any(|n| subject.contains(n));
+    status.trim() == "Valid" && publisher
+}
+
+/// Vrai si cette entrée est la sortie du câble virtuel (*CABLE Output*) : la
+/// prendre comme micro ferait écouter à Micro Studio sa propre sortie, en
+/// boucle. Windows en fait souvent le micro par défaut juste après
+/// l'installation de VB-Cable.
+#[must_use]
+pub fn is_cable_loopback_input(name: &str) -> bool {
+    let name = name.to_lowercase();
+    name.contains("cable output") || name.contains("vb-audio virtual cable")
+}
+
+/// Noms (en minuscules) des micros virtuels courants : changeurs de voix,
+/// tables de mixage logicielles, débruiteurs. Ils renvoient un son déjà
+/// traité par un autre logiciel, pas celui du micro.
+const VIRTUAL_MIC_MARKERS: [&str; 7] =
+    ["voicemod", "voicemeeter", "nvidia broadcast", "steam streaming", "krisp", "virtual", "vb-audio"];
+
+/// Vrai si cette entrée est un micro virtuel (VB-Cable, Voicemod,
+/// `VoiceMeeter`…) plutôt qu'un vrai micro.
+#[must_use]
+pub fn is_virtual_microphone(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    is_cable_loopback_input(name) || VIRTUAL_MIC_MARKERS.iter().any(|m| lower.contains(m))
+}
+
+/// Premier vrai micro de la liste : ni la sortie du câble virtuel, ni un
+/// autre micro virtuel.
+#[must_use]
+pub fn first_real_microphone(inputs: &[String]) -> Option<String> {
+    inputs.iter().find(|n| !is_virtual_microphone(n)).cloned()
+}
+
+/// Dossier de travail par défaut (`%TEMP%\micro-studio-vbcable`).
+#[must_use]
+pub fn default_work_dir() -> PathBuf {
+    std::env::temp_dir().join("micro-studio-vbcable")
+}
+
+/// Met une chaîne entre apostrophes pour PowerShell (`'` devient `''`).
+#[must_use]
+pub fn ps_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+fn download_script(url: &str, dir: &Path) -> String {
+    let dir = ps_quote(&dir.display().to_string());
+    format!(
+        "if (Test-Path -LiteralPath {dir}) {{ Remove-Item -LiteralPath {dir} -Recurse -Force }}\n\
+         New-Item -ItemType Directory -Path {dir} | Out-Null\n\
+         $zip = Join-Path {dir} 'vbcable.zip'\n\
+         Invoke-WebRequest -UseBasicParsing -Uri {url} -OutFile $zip\n\
+         Expand-Archive -LiteralPath $zip -DestinationPath {dir} -Force\n\
+         Remove-Item -LiteralPath $zip\n",
+        url = ps_quote(url),
+    )
+}
+
+fn signature_script(setup: &Path) -> String {
+    format!(
+        "$s = Get-AuthenticodeSignature -LiteralPath {}\n\
+         $subject = if ($s.SignerCertificate) {{ $s.SignerCertificate.Subject }} else {{ '' }}\n\
+         Write-Output (\"{{0}}|{{1}}\" -f $s.Status, $subject)\n",
+        ps_quote(&setup.display().to_string())
+    )
+}
+
+fn launch_script(setup: &Path) -> String {
+    let setup = ps_quote(&setup.display().to_string());
+    format!(
+        "try {{\n\
+         \x20 $p = Start-Process -FilePath {setup} -WorkingDirectory (Split-Path -LiteralPath {setup}) -Verb RunAs -Wait -PassThru\n\
+         }} catch {{ exit {EXIT_CANCELLED} }}\n\
+         # Le code de retour du programme de VB-Audio n'est pas documenté :\n\
+         # le succès se juge à l'apparition de CABLE Input (voir l'interface).\n\
+         exit 0\n"
+    )
+}
+
+/// Préambule et gestion d'erreur communs à tous les scripts : toute
+/// exception est écrite en clair sur la sortie standard (`ERREUR: …`) au lieu
+/// du flux d'erreur, que PowerShell sérialise en CLIXML illisible.
+fn wrap_script(body: &str) -> String {
+    format!(
+        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n\
+         $ErrorActionPreference = 'Stop'\n\
+         $ProgressPreference = 'SilentlyContinue'\n\
+         try {{\n{body}}} catch {{\n\
+         \x20 [Console]::Out.WriteLine('{ERROR_PREFIX}' + $_.Exception.Message)\n\
+         \x20 exit 1\n\
+         }}\n"
+    )
+}
+
+/// Préfixe des messages d'erreur écrits par [`wrap_script`].
+const ERROR_PREFIX: &str = "ERREUR: ";
+
+/// Message lisible d'un échec PowerShell : d'abord la ligne `ERREUR: …` de la
+/// sortie standard, sinon le texte des erreurs CLIXML, sinon la sortie brute.
+#[must_use]
+pub fn failure_message(stdout: &str, stderr: &str) -> String {
+    if let Some(line) = stdout.lines().find_map(|l| l.trim().strip_prefix(ERROR_PREFIX)) {
+        return line.trim().to_owned();
+    }
+    let from_clixml = clixml_errors(stderr);
+    if !from_clixml.is_empty() {
+        return from_clixml;
+    }
+    let raw = if stderr.trim().is_empty() { stdout } else { stderr };
+    first_line(raw).to_owned()
+}
+
+/// Extrait le texte des éléments `<S S="Error">` d'un flux CLIXML.
+fn clixml_errors(s: &str) -> String {
+    let mut text = String::new();
+    let mut rest = s;
+    // Borne : un flux d'erreur ne contient jamais plus de quelques centaines d'éléments.
+    for _ in 0..1_000 {
+        let Some(start) = rest.find("<S S=\"Error\">") else { break };
+        rest = &rest[start + "<S S=\"Error\">".len()..];
+        let Some(end) = rest.find("</S>") else { break };
+        text.push_str(&rest[..end]);
+        rest = &rest[end..];
+    }
+    let decoded = text
+        .replace("_x000D_", "")
+        .replace("_x000A_", " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&");
+    decoded.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn file_name(path: &str) -> &str {
+    path.rsplit(['/', '\\']).next().unwrap_or(path)
+}
+
+fn first_line(s: &str) -> &str {
+    s.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("sans détail")
+}
+
+/// Encode un script pour `powershell -EncodedCommand` (UTF-16LE puis Base64).
+#[must_use]
+pub fn encode_command(script: &str) -> String {
+    let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    base64(&bytes)
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(char::from(TABLE[((n >> (18 - 6 * i)) & 0x3F) as usize]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// Le vrai système : Windows PowerShell 5.1, fourni avec Windows 10/11.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PowerShell;
+
+impl Shell for PowerShell {
+    fn run(&self, script: &str) -> Result<String, (i32, String)> {
+        // Chemin complet : pas de détournement par un powershell.exe placé dans le PATH.
+        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+        let exe = Path::new(&root).join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+        let mut cmd = std::process::Command::new(exe);
+        cmd.args(["-NoProfile", "-NonInteractive", "-OutputFormat", "Text", "-ExecutionPolicy", "Bypass"])
+            .arg("-EncodedCommand")
+            .arg(encode_command(&wrap_script(script)))
+            // Hérité de PowerShell 7 (terminal, éditeur…), PSModulePath fait
+            // charger à Windows PowerShell 5.1 des modules incompatibles :
+            // Get-AuthenticodeSignature échoue alors. On laisse 5.1 le recalculer.
+            .env_remove("PSModulePath");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let out = cmd.output().map_err(|e| (-1, format!("PowerShell introuvable : {e}")))?;
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        if out.status.success() {
+            Ok(stdout)
+        } else {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            Err((out.status.code().unwrap_or(-1), failure_message(&stdout, &stderr)))
+        }
+    }
+
+    fn list_files(&self, dir: &Path) -> std::io::Result<Vec<String>> {
+        let mut files = Vec::new();
+        let mut pending = vec![dir.to_path_buf()];
+        // Le paquet compte une dizaine de fichiers sur deux niveaux : la borne
+        // évite toute boucle sans fin (lien symbolique cyclique).
+        let mut budget = 1_000_usize;
+        while let Some(current) = pending.pop() {
+            for entry in std::fs::read_dir(&current)? {
+                budget = budget.saturating_sub(1);
+                if budget == 0 {
+                    return Ok(files);
+                }
+                let path = entry?.path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if let Ok(rel) = path.strip_prefix(dir) {
+                    files.push(rel.display().to_string());
+                }
+            }
+        }
+        Ok(files)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    const PACK45: &[&str] = &[
+        "readme.txt",
+        "VBCABLE_ControlPanel.exe",
+        "VBCABLE_Setup.exe",
+        "VBCABLE_Setup_x64.exe",
+        "VBCABLE_Setup_arm64.exe",
+        "vbMmeCable64_win10.inf",
+    ];
+
+    #[test]
+    fn picks_the_setup_matching_the_processor() {
+        let files = names(PACK45);
+        assert_eq!(pick_setup(&files, Arch::X64).as_deref(), Some("VBCABLE_Setup_x64.exe"));
+        assert_eq!(pick_setup(&files, Arch::Arm64).as_deref(), Some("VBCABLE_Setup_arm64.exe"));
+        assert_eq!(pick_setup(&files, Arch::X86).as_deref(), Some("VBCABLE_Setup.exe"));
+    }
+
+    #[test]
+    fn pick_setup_handles_subfolders_case_and_absence() {
+        let files = names(&["Pack\\vbcable_setup_X64.EXE", "Pack/VBCABLE_Setup_a64.exe"]);
+        assert_eq!(pick_setup(&files, Arch::X64).as_deref(), Some("Pack\\vbcable_setup_X64.EXE"));
+        assert_eq!(pick_setup(&files, Arch::Arm64).as_deref(), Some("Pack/VBCABLE_Setup_a64.exe"));
+        assert_eq!(pick_setup(&files, Arch::X86), None);
+        assert_eq!(pick_setup(&names(&["VBCABLE_Setup_x64.zip", "setup_x64.exe"]), Arch::X64), None);
+        assert_eq!(pick_setup(&[], Arch::X64), None);
+    }
+
+    #[test]
+    fn only_a_valid_vb_audio_signature_is_trusted() {
+        // Sujet réel relevé sur le PC d'Adrien le 2026-11-02 (Pack45, x64).
+        let real = "Valid|CN=BUREL VINCENT Entrepreneur individuel, O=BUREL VINCENT Entrepreneur individuel, \
+                    STREET=21 avenue des Marguerites, L=Eymet, S=Dordogne, C=FR, \
+                    OID.1.3.6.1.4.1.311.60.2.1.3=FR, SERIALNUMBER=423 734 177, OID.2.5.4.15=Private Organization\r\n";
+        assert!(is_trusted_signature(real));
+        assert!(is_trusted_signature("Valid|CN=Autre nom, SERIALNUMBER=423 734 177"));
+        assert!(!is_trusted_signature(&real.replacen("Valid", "NotTrusted", 1)));
+        assert!(is_trusted_signature("Valid|CN=Vincent Burel, O=Vincent Burel, C=FR\r\n"));
+        assert!(is_trusted_signature("\nValid|CN=VB-Audio Software"));
+        assert!(!is_trusted_signature("NotSigned|"));
+        assert!(!is_trusted_signature("HashMismatch|CN=Vincent Burel"));
+        assert!(!is_trusted_signature("Valid|CN=Someone Else"));
+        assert!(!is_trusted_signature("Valid"));
+        assert!(!is_trusted_signature(""));
+    }
+
+    #[test]
+    fn quoting_and_encoding_are_correct() {
+        assert_eq!(ps_quote(r"C:\Users\l'ami\x"), r"'C:\Users\l''ami\x'");
+        // Vecteurs de la RFC 4648.
+        for (input, expected) in [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foobar", "Zm9vYmFy")] {
+            assert_eq!(base64(input.as_bytes()), expected);
+        }
+        // « dir » en UTF-16LE, forme attendue par -EncodedCommand.
+        assert_eq!(encode_command("dir"), "ZABpAHIA");
+    }
+
+    #[test]
+    fn scripts_target_the_right_files() {
+        let dir = Path::new(r"C:\Temp\ms vb");
+        let dl = download_script(PACKAGE_URL, dir);
+        assert!(dl.contains(&ps_quote(PACKAGE_URL)) && dl.contains(r"'C:\Temp\ms vb'"));
+        assert!(dl.contains("Expand-Archive"));
+        let setup = dir.join("VBCABLE_Setup_x64.exe");
+        assert!(signature_script(&setup).contains("Get-AuthenticodeSignature"));
+        let launch = launch_script(&setup);
+        assert!(launch.contains("-Verb RunAs") && launch.contains(&format!("exit {EXIT_CANCELLED}")));
+    }
+
+    #[test]
+    fn failures_are_readable_even_from_clixml() {
+        // Cas réel vu sur le PC d'Adrien : seul « #< CLIXML » était affiché.
+        let clixml = "#< CLIXML\r\n<Objs Version=\"1.1.0.1\" xmlns=\"http://schemas.microsoft.com/powershell/2004/04\">\
+            <S S=\"Error\">Le module &apos;Microsoft.PowerShell.Security&apos; n&apos;a pas pu être chargé._x000D__x000A_</S>\
+            <S S=\"Error\">    + CategoryInfo : &lt;inconnu&gt;_x000D__x000A_</S></Objs>";
+        assert_eq!(
+            failure_message("", clixml),
+            "Le module 'Microsoft.PowerShell.Security' n'a pas pu être chargé. + CategoryInfo : <inconnu>"
+        );
+        assert_eq!(failure_message("bla\nERREUR: accès refusé\n", clixml), "accès refusé");
+        assert_eq!(failure_message("sortie\n", ""), "sortie");
+        assert_eq!(failure_message("", "  \nerreur brute\n"), "erreur brute");
+        assert_eq!(failure_message("", "<S S=\"Error\">non fermé"), "<S S=\"Error\">non fermé");
+    }
+
+    #[test]
+    fn every_script_reports_errors_on_stdout() {
+        let wrapped = wrap_script("Get-Thing\n");
+        assert!(wrapped.contains("$ErrorActionPreference = 'Stop'"));
+        assert!(wrapped.contains("$ProgressPreference = 'SilentlyContinue'"));
+        assert!(wrapped.contains("try {\nGet-Thing\n} catch {"));
+        assert!(wrapped.contains(&format!("'{ERROR_PREFIX}'")));
+    }
+
+    #[test]
+    fn the_cable_output_is_never_taken_as_the_microphone() {
+        assert!(is_cable_loopback_input("CABLE Output (VB-Audio Virtual Cable)"));
+        assert!(is_cable_loopback_input("Micro (VB-Audio Virtual Cable)"));
+        assert!(!is_cable_loopback_input("Micro (Guitar Hero USB)"));
+        let inputs = names(&["CABLE Output (VB-Audio Virtual Cable)", "Micro (USB Audio Device)"]);
+        assert_eq!(first_real_microphone(&inputs).as_deref(), Some("Micro (USB Audio Device)"));
+        assert_eq!(first_real_microphone(&inputs[..1]), None);
+    }
+
+    #[test]
+    fn other_virtual_microphones_are_recognised() {
+        for v in [
+            "Microphone (Voicemod Virtual Audio Device (WDM))",
+            "VoiceMeeter Output (VB-Audio VoiceMeeter VAIO)",
+            "Microphone (NVIDIA Broadcast)",
+            "Microphone (Steam Streaming Microphone)",
+            "Microphone (Krisp Microphone)",
+        ] {
+            assert!(is_virtual_microphone(v), "{v}");
+        }
+        assert!(!is_virtual_microphone("Microphone (Logitech Guitar Hero USB)"));
+        let inputs = names(&["Microphone (Voicemod)", "Micro (Guitar Hero USB)"]);
+        assert_eq!(first_real_microphone(&inputs).as_deref(), Some("Micro (Guitar Hero USB)"));
+    }
+
+    #[test]
+    fn texts_are_human_readable() {
+        assert!(Step::WaitingForSetup.label().contains("Install Driver"));
+        assert!(Step::Downloading.label().contains("Téléchargement"));
+        assert!(Step::Verifying.label().contains("signature"));
+        assert!(Outcome::Finished.to_string().contains("terminée"));
+        assert!(Outcome::Cancelled.to_string().contains("annulée"));
+        assert!(Outcome::Failed("x".into()).to_string().ends_with('x'));
+        assert!(CREDIT.contains("www.vb-cable.com") && CREDIT.contains("donationware"));
+        assert!(default_work_dir().ends_with("micro-studio-vbcable"));
+        assert_eq!(first_line("  \n"), "sans détail");
+        let _ = Arch::current();
+    }
+
+    /// Faux PowerShell : répond selon le script reçu et note les appels.
+    struct FakeShell {
+        download: Result<String, (i32, String)>,
+        files: std::io::Result<Vec<String>>,
+        signature: Result<String, (i32, String)>,
+        launch: Result<String, (i32, String)>,
+        calls: RefCell<Vec<&'static str>>,
+    }
+
+    impl FakeShell {
+        fn ok() -> Self {
+            Self {
+                download: Ok(String::new()),
+                files: Ok(names(PACK45)),
+                signature: Ok("Valid|CN=BUREL VINCENT Entrepreneur individuel, SERIALNUMBER=423 734 177".into()),
+                launch: Ok(String::new()),
+                calls: RefCell::default(),
+            }
+        }
+    }
+
+    impl Shell for FakeShell {
+        fn run(&self, script: &str) -> Result<String, (i32, String)> {
+            let (name, answer) = if script.contains("Invoke-WebRequest") {
+                ("download", &self.download)
+            } else if script.contains("Get-AuthenticodeSignature") {
+                assert!(script.contains("VBCABLE_Setup_x64.exe"));
+                ("signature", &self.signature)
+            } else {
+                assert!(script.contains("RunAs"));
+                ("launch", &self.launch)
+            };
+            self.calls.borrow_mut().push(name);
+            answer.clone()
+        }
+
+        fn list_files(&self, _: &Path) -> std::io::Result<Vec<String>> {
+            match &self.files {
+                Ok(f) => Ok(f.clone()),
+                Err(e) => Err(std::io::Error::new(e.kind(), e.to_string())),
+            }
+        }
+    }
+
+    fn run(shell: &FakeShell) -> (Outcome, Vec<Step>) {
+        let mut steps = Vec::new();
+        let outcome = install(shell, Path::new("work"), Arch::X64, &mut |s| steps.push(s));
+        (outcome, steps)
+    }
+
+    #[test]
+    fn happy_path_runs_every_step_in_order() {
+        let shell = FakeShell::ok();
+        let (outcome, steps) = run(&shell);
+        assert_eq!(outcome, Outcome::Finished);
+        assert_eq!(steps, [Step::Downloading, Step::Verifying, Step::WaitingForSetup]);
+        assert_eq!(*shell.calls.borrow(), ["download", "signature", "launch"]);
+    }
+
+    #[test]
+    fn untrusted_signature_never_launches_the_setup() {
+        let shell = FakeShell { signature: Ok("Valid|CN=Pirate".into()), ..FakeShell::ok() };
+        let (outcome, _) = run(&shell);
+        assert!(matches!(outcome, Outcome::Failed(ref m) if m.contains("signature non reconnue")));
+        assert_eq!(*shell.calls.borrow(), ["download", "signature"]);
+    }
+
+    #[test]
+    fn each_failure_is_reported() {
+        let shell = FakeShell { download: Err((1, "Hôte inconnu\nligne 2".into())), ..FakeShell::ok() };
+        assert!(
+            matches!(run(&shell).0, Outcome::Failed(ref m) if m.contains("Hôte inconnu") && !m.contains("ligne 2"))
+        );
+
+        let shell = FakeShell { files: Err(std::io::Error::other("refusé")), ..FakeShell::ok() };
+        assert!(matches!(run(&shell).0, Outcome::Failed(ref m) if m.contains("illisible")));
+
+        let shell = FakeShell { files: Ok(names(&["readme.txt"])), ..FakeShell::ok() };
+        assert!(matches!(run(&shell).0, Outcome::Failed(ref m) if m.contains("introuvable")));
+
+        let shell = FakeShell { signature: Err((1, "boom".into())), ..FakeShell::ok() };
+        assert!(matches!(run(&shell).0, Outcome::Failed(ref m) if m.contains("vérification impossible")));
+
+        let shell = FakeShell { launch: Err((EXIT_CANCELLED, String::new())), ..FakeShell::ok() };
+        assert_eq!(run(&shell).0, Outcome::Cancelled);
+
+        let shell = FakeShell { launch: Err((5, "code 5".into())), ..FakeShell::ok() };
+        assert!(matches!(run(&shell).0, Outcome::Failed(ref m) if m.contains("code 5")));
+    }
+
+    #[test]
+    fn list_files_walks_subfolders() {
+        let dir = std::env::temp_dir().join(format!("ms-vbcable-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).expect("dossier de test");
+        std::fs::write(dir.join("a.txt"), b"a").expect("fichier de test");
+        std::fs::write(dir.join("sub").join("VBCABLE_Setup_x64.exe"), b"b").expect("fichier de test");
+        let mut files = PowerShell.list_files(&dir).expect("lecture");
+        files.sort();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(files.len(), 2);
+        assert_eq!(
+            pick_setup(&files, Arch::X64).map(|f| file_name(&f).to_owned()).as_deref(),
+            Some("VBCABLE_Setup_x64.exe")
+        );
+    }
+}

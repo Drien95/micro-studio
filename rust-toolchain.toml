@@ -1,0 +1,5 @@
+[toolchain]
+# Version figée pour des résultats reproductibles (lints clippy compris).
+# À monter volontairement, dans une PR dédiée.
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]

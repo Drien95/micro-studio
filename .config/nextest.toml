@@ -1,0 +1,20 @@
+# Profils de cargo-nextest (https://nexte.st).
+
+# Profil de la mesure de couverture (job « Couverture de tests ») : le code
+# instrumenté compte chaque passage dans les boucles de calcul, ce qui rend
+# les tests de bout en bout des réseaux de neurones (DNSMOS) et du calibrage
+# complet des centaines de fois plus lents (plus de 6 h en CI). Ils sont
+# exclus de la mesure seulement : les jobs « Tests » les exécutent sur les
+# trois systèmes, sans instrumentation.
+[profile.coverage]
+default-filter = """
+not (
+    test(=dnsmos::tests::matches_the_official_model)
+  | test(=dnsmos::tests::background_noise_lowers_the_background_score)
+  | test(=calibrate::tests::calibration_on_synthetic_voice_is_sane)
+  | test(=calibrate::tests::keyboard_phase_is_measured_and_never_counted_as_voice)
+  | test(=calibrate::tests::check_rejects_inaudible_voice)
+  | (binary(calibration) & test(/^(calibration_is_deterministic|progress_is_reported_up_to_one|degenerate_recordings_do_not_panic)$/))
+)
+"""
+slow-timeout = { period = "60s", terminate-after = 10 }

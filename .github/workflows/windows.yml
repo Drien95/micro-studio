@@ -1,3 +1,4 @@
+# Build de l'exécutable Windows et publication sur les tags de version (vX.Y.Z).
 name: Windows
 
 on:
@@ -7,7 +8,11 @@ on:
   pull_request:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -16,16 +21,51 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Tests
-        run: cargo test --release
-      - name: Compilation
-        run: cargo build --release
+      - name: Le tag correspond à la version de Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d '"' -f2)
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "Tag $GITHUB_REF_NAME ≠ version v$version"; exit 1; }
+      # Les tests tournent déjà dans le workflow CI (3 systèmes) : ici on ne
+      # fait que l'exécutable. LTO complet seulement pour une version publiée ;
+      # sur une pull request, compilation rapide (même code, un peu moins
+      # optimisé), pour pouvoir l'essayer sans attendre.
+      - name: Compilation rapide (pull request, branche)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        env:
+          CARGO_INCREMENTAL: 0
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
+        run: cargo build --release --locked
+      - name: Tests de la version publiée (LTO complet)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: cargo test --release --locked
+      - name: Compilation de la version publiée (LTO complet)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: cargo build --release --locked
       - uses: actions/upload-artifact@v4
         with:
           name: micro-studio-windows
           path: target/release/micro-studio.exe
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: micro-studio-windows
+      - name: Notes de version extraites du CHANGELOG
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '/^## \[/{p = index($0, "[" v "]") > 0; next} p' CHANGELOG.md > notes.md
       - name: Publier la version
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: target/release/micro-studio.exe
+          files: micro-studio.exe
+          body_path: notes.md

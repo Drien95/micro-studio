@@ -1,0 +1,78 @@
+name: Pilote micro virtuel
+
+on:
+  push:
+    branches: [main]
+    paths: ["driver/**", ".github/workflows/driver.yml"]
+  pull_request:
+    paths: ["driver/**", ".github/workflows/driver.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  core-tests:
+    name: Tests du cœur (gcc + clang, sanitizers, couverture)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tests gcc (ASan + UBSan)
+        run: make -C driver/tests test CC=gcc
+      - name: Tests clang (ASan + UBSan)
+        run: make -C driver/tests clean test CC=clang
+      - name: Couverture (100 % des lignes exigé)
+        run: make -C driver/tests coverage CC=gcc
+
+  core-tests-msvc:
+    name: Tests du cœur (MSVC /W4 /WX) et scripts PowerShell
+    runs-on: windows-2025-vs2026
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Tests du cœur avec MSVC (/W4 /WX)
+        shell: cmd
+        run: |
+          cl /nologo /W4 /WX /TC driver\core\ms_loopback.c driver\tests\test_ms_loopback.c /Fe:test_ms_loopback.exe || exit /b 1
+          test_ms_loopback.exe
+      - name: Vérification syntaxique des scripts PowerShell
+        shell: pwsh
+        run: |
+          $errors = $null
+          Get-ChildItem driver/scripts/*.ps1 | ForEach-Object {
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errors) | Out-Null
+            if ($errors) { $errors; exit 1 }
+          }
+
+  # Job séparé, sans msvc-dev-cmd : seul l'environnement du WDK NuGet compte.
+  build:
+    name: Compilation du pilote (WDK, x64)
+    runs-on: windows-2025-vs2026
+    steps:
+      - uses: actions/checkout@v4
+      # MSBuild 64 bits : le paquet NuGet WDK x64 ne fournit les outils
+      # (stampinf, inf2cat, signtool) que pour un hôte x64.
+      - uses: microsoft/setup-msbuild@v2
+        with:
+          msbuild-architecture: x64
+      - name: Kit de développement de pilotes (WDK via NuGet)
+        run: nuget restore driver\packages.config -PackagesDirectory driver\packages
+      - name: Compilation (Release x64, signature de test)
+        run: msbuild driver\MicroStudioCable\SimpleAudioSample.sln /m /p:Configuration=Release /p:Platform=x64
+      - name: Préparation du paquet
+        shell: pwsh
+        run: |
+          $out = New-Item -ItemType Directory -Force micro-studio-cable-x64
+          $root = 'driver/MicroStudioCable'
+          foreach ($name in 'MicroStudioCable.inf', 'MicroStudioCable.sys', 'MicroStudioCable.cat', 'package.cer') {
+            $file = Get-ChildItem $root -Recurse -Filter $name | Where-Object FullName -match 'Release' |
+              Sort-Object { $_.FullName -match '\\package\\' } -Descending | Select-Object -First 1
+            if (-not $file) { throw "Introuvable : $name" }
+            Copy-Item $file.FullName $out
+          }
+          Copy-Item driver/scripts/*.ps1, driver/README.md $out
+          Get-ChildItem $out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: micro-studio-cable-x64
+          path: micro-studio-cable-x64

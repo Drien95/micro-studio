@@ -1,0 +1,145 @@
+# Contrôle qualité : format, analyse statique, tests sur 3 OS, documentation,
+# dépendances (sécurité + licences), version minimale de Rust et couverture.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  # CI : la compilation incrémentale ne sert à rien sur une machine neuve et
+  # alourdit le cache.
+  CARGO_INCREMENTAL: 0
+  # Profil « rapide » pour les tests : le traitement audio (DeepFilterNet,
+  # DNSMOS, calibrage) est 10 à 20 fois plus lent sans optimisation. On
+  # compile en --release mais sans LTO et en parallèle (16 unités), avec les
+  # vérifications de débordement et les debug_assert! gardées. Le LTO complet
+  # est réservé à l'exécutable publié (workflow Windows, sur les tags).
+  CARGO_PROFILE_RELEASE_LTO: "false"
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
+  CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS: "true"
+  CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS: "true"
+
+jobs:
+  fmt:
+    name: Format (rustfmt)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: Analyse statique (clippy)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Dépendances système (ALSA)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - run: cargo clippy --all-targets --locked -- -D warnings
+
+  test:
+    name: Tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Dépendances système (ALSA)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      # nextest lance tous les tests en parallèle, binaires de test compris
+      # (cargo test les enchaîne : la bibliothèque puis le calibrage, 80 s + 110 s).
+      - uses: taiki-e/install-action@nextest
+      - run: cargo nextest run --release --locked --all-targets --no-fail-fast
+      - run: cargo test --release --locked --doc
+
+  msrv:
+    name: Version minimale de Rust (MSRV)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lire rust-version dans Cargo.toml
+        id: msrv
+        run: echo "version=$(grep -m1 '^rust-version' Cargo.toml | cut -d '"' -f2)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      # `+version` l'emporte sur rust-toolchain.toml (qui fige la version de travail).
+      # La version minimale vaut pour ce que compilent les utilisateurs
+      # (bibliothèque et exécutable) : les dépendances de test, comme le moteur
+      # DeepFilterNet officiel qui sert de référence, peuvent en exiger une plus
+      # récente.
+      - run: cargo +${{ steps.msrv.outputs.version }} check --locked --lib --bins
+
+  doc:
+    name: Documentation
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - run: cargo doc --no-deps --locked
+
+  deny:
+    name: Dépendances (sécurité, licences)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  coverage:
+    name: Couverture de tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # Pour la version figée dans rust-toolchain.toml, celle qu'utilise cargo ici.
+      - run: rustup component add llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov,nextest
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      # Bloquant sous 85 % de lignes couvertes (86,6 % au 3 novembre 2026).
+      # Profil nextest « coverage » (.config/nextest.toml) : un processus par
+      # test, et sans les tests de bout en bout trop lents une fois instrumentés.
+      - name: Mesure (main.rs exclu, il ne fait qu'ouvrir la fenêtre)
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo llvm-cov nextest --profile coverage --release --locked --all-targets --summary-only \
+            --ignore-filename-regex 'src/main\.rs' --fail-under-lines 85 | tee coverage.txt
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat coverage.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

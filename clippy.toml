@@ -1,0 +1,5 @@
+# Les tests peuvent utiliser unwrap/panic : un échec doit y être bruyant.
+allow-unwrap-in-tests = true
+allow-panic-in-tests = true
+# Noms propres d'algorithmes cités dans la documentation.
+doc-valid-idents = ["RNNoise", "DeepFilterNet", "DeepFilterNet3", "DNSMOS", "ReLU", ".."]
