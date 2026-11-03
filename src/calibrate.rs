@@ -553,6 +553,9 @@ pub struct CalibrationResult {
     pub score: Score,
     pub baseline_score: Score,
     pub candidates_tested: usize,
+    /// Les meilleurs réglages (le premier est `params`), proposés à l'écoute
+    /// à l'aveugle.
+    pub finalists: Vec<(Params, Score)>,
 }
 
 /// Variantes essayées autour des réglages proposés.
@@ -658,18 +661,20 @@ pub fn run(rec: &Recording, mut progress: impl FnMut(f32)) -> CalibrationResult 
         for (p, s) in &mut results {
             let m = step(&render_aligned(p, &full));
             s.mos = Some(m);
-            s.total += MOS_WEIGHT * m.ovrl + MOS_SIG_WEIGHT * m.sig;
+            s.total += MOS_BAK_WEIGHT * m.bak;
         }
     }
     progress(1.0);
-    let best = results.into_iter().max_by(|a, b| a.1.total.total_cmp(&b.1.total));
-    let (params, score) = best.expect("au moins un candidat");
+    results.truncate(MOS_FINALISTS);
+    results.sort_by(|a, b| b.1.total.total_cmp(&a.1.total));
+    let (params, score) = results.first().cloned().expect("au moins un candidat");
     CalibrationResult {
         analysis,
         params,
         score,
         baseline_score,
         candidates_tested: candidates.len() + FINALISTS + refined,
+        finalists: results,
     }
 }
 
@@ -783,12 +788,12 @@ const MOS_CLIPS: usize = 2;
 /// le gain d'entrée puis par celui-ci.
 const MAX_OUTPUT_GAIN_DB: f32 = 12.0;
 
-/// Poids d'un point de note globale DNSMOS dans le score (en « dB » de score) :
-/// un point sur l'échelle 1-5 sépare un rendu « médiocre » d'un rendu « bon ».
-const MOS_WEIGHT: f32 = 10.0;
-/// Poids supplémentaire de la clarté de la voix (SIG) : un débruitage qui
-/// abîme la voix doit perdre face à un réglage plus doux.
-const MOS_SIG_WEIGHT: f32 = 5.0;
+/// Poids d'un point de note DNSMOS « bruit de fond » (BAK) dans le départage.
+/// Seule la propreté compte : DNSMOS travaille à 16 kHz (il n'entend rien
+/// au-dessus de 8 kHz) et sa note de clarté de la voix (SIG) ne suit les
+/// auditeurs qu'à 0,71 de corrélation extrait par extrait. La qualité de la
+/// voix est départagée à l'oreille (écoute à l'aveugle des finalistes).
+const MOS_BAK_WEIGHT: f32 = 10.0;
 
 /// Variantes de la manche 1 qui repassent avec DeepFilterNet.
 const FINALISTS: usize = 6;

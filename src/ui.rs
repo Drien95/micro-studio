@@ -18,8 +18,19 @@ enum Calib {
     Silence(Instant),
     Keyboard(Instant),
     Speech(Instant),
-    Computing { rx: Receiver<CalibMsg>, progress: f32 },
-    Done { result: Box<CalibrationResult>, previous: Box<Params>, listening_new: bool },
+    Computing {
+        rx: Receiver<CalibMsg>,
+        progress: f32,
+    },
+    /// `order[k]` : finaliste caché derrière la lettre k ; `chosen` : lettre
+    /// retenue ; `listening_previous` : écoute des anciens réglages.
+    Done {
+        result: Box<CalibrationResult>,
+        previous: Box<Params>,
+        order: Vec<usize>,
+        chosen: usize,
+        listening_previous: bool,
+    },
     Failed(String),
 }
 
@@ -541,15 +552,18 @@ impl App {
                                     next = Some(Calib::Failed(msg.into()));
                                 } else {
                                     let previous = Box::new(self.settings.params.clone());
-                                    apply = Some(r.params.clone());
-                                    next = Some(Calib::Done { result: r, previous, listening_new: true });
+                                    let order = blind_order(r.finalists.len().max(1));
+                                    // On commence par la lettre qui cache le meilleur score.
+                                    let chosen = order.iter().position(|&i| i == 0).unwrap_or(0);
+                                    apply = Some(finalist(&r, order[chosen]).clone());
+                                    next = Some(Calib::Done { result: r, previous, order, chosen, listening_previous: false });
                                 }
                             }
                         }
                     }
                     ui.add(egui::ProgressBar::new(*progress).show_percentage());
                 }
-                Calib::Done { result, previous, listening_new } => {
+                Calib::Done { result, previous, order, chosen, listening_previous } => {
                     let a = &result.analysis;
                     ui.heading("Calibrage terminé");
                     ui.label(format!("Bruit de fond : {:.0} dBFS · Voix : {:.0} dBFS · Écart voix/bruit : {:.0} dB", a.noise_floor_db, a.speech_level_db, a.snr_db));
@@ -562,25 +576,30 @@ impl App {
                         ui.label(format!("Bourdonnement repéré et filtré : {}.", freqs.join(", ")));
                     }
                     ui.add_space(6.0);
-                    ui.label(format!("{} réglages testés. Avant / après :", result.candidates_tested));
-                    report_grid(ui, &result.baseline_score, &result.score);
+                    let (chosen_params, chosen_score) = result.finalists.get(order[*chosen]).cloned().unwrap_or_else(|| (result.params.clone(), result.score.clone()));
+                    ui.label(format!("{} réglages testés. Avant / après (réglage {}) :", result.candidates_tested, slot_name(*chosen)));
+                    report_grid(ui, &result.baseline_score, &chosen_score);
                     ui.add_space(6.0);
+                    ui.label(RichText::new("Écoute à l'aveugle : les meilleurs réglages sont cachés derrière des lettres, dans un ordre mélangé. Garde celui que tu préfères à l'oreille.").weak());
                     ui.horizontal(|ui| {
                         ui.label("Écouter :");
-                        if ui.selectable_label(*listening_new, "Nouveaux réglages").clicked() {
-                            *listening_new = true;
-                            apply = Some(result.params.clone());
+                        for (k, &i) in order.iter().enumerate() {
+                            if ui.selectable_label(!*listening_previous && *chosen == k, format!("Réglage {}", slot_name(k))).clicked() {
+                                *chosen = k;
+                                *listening_previous = false;
+                                apply = Some(finalist(result, i).clone());
+                            }
                         }
-                        if ui.selectable_label(!*listening_new, "Anciens réglages").clicked() {
-                            *listening_new = false;
+                        if ui.selectable_label(*listening_previous, "Anciens réglages").clicked() {
+                            *listening_previous = true;
                             apply = Some((**previous).clone());
                         }
                     });
                     ui.label(RichText::new("Astuce : dans Windows, coche « Écouter ce périphérique » sur CABLE Output pour t'entendre.").weak());
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        if ui.button(RichText::new("Garder").strong()).clicked() {
-                            apply = Some(result.params.clone());
+                        if ui.button(RichText::new(format!("Garder le réglage {}", slot_name(*chosen))).strong()).clicked() {
+                            apply = Some(chosen_params.clone());
                             self.settings.calibrated = true;
                             next = Some(Calib::Idle);
                         }
@@ -657,6 +676,32 @@ fn noise_sections(ui: &mut egui::Ui, p: &mut Params) {
             "Plus c'est haut, plus il faut être sûr que c'est de la voix. Trop haut : des mots sont coupés.",
         );
     });
+}
+
+/// Lettre d'un réglage dans l'écoute à l'aveugle (A, B, C…).
+fn slot_name(k: usize) -> char {
+    char::from(b'A' + u8::try_from(k % 26).unwrap_or(0))
+}
+
+/// Réglages du finaliste `i` (le meilleur si l'indice est hors liste).
+fn finalist(r: &CalibrationResult, i: usize) -> &Params {
+    r.finalists.get(i).map_or(&r.params, |f| &f.0)
+}
+
+/// Ordre mélangé des finalistes pour l'écoute à l'aveugle (Fisher-Yates,
+/// graine tirée de l'horloge : l'utilisateur ne peut pas deviner).
+fn blind_order(n: usize) -> Vec<usize> {
+    let mut seed =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0x9e37_79b9, |d| d.subsec_nanos())
+            | 1;
+    let mut order: Vec<usize> = (0..n).collect();
+    for i in (1..n).rev() {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        order.swap(i, seed as usize % (i + 1));
+    }
+    order
 }
 
 /// Réglages de l'anti-réverbération.
@@ -805,6 +850,17 @@ impl App {
     /// Dernier message d'erreur affiché.
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
+    }
+
+    /// Affiche le résultat d'un calibrage comme s'il venait de se terminer
+    /// (le calcul a lieu sinon dans un fil séparé). Sert aux tests.
+    pub fn show_calibration_result(&mut self, r: CalibrationResult) {
+        let previous = Box::new(self.settings.params.clone());
+        let order = blind_order(r.finalists.len().max(1));
+        let chosen = order.iter().position(|&i| i == 0).unwrap_or(0);
+        let first = finalist(&r, order[chosen]).clone();
+        self.apply_params(first);
+        self.calib = Calib::Done { result: Box::new(r), previous, order, chosen, listening_previous: false };
     }
 
     /// Vrai si l'assistant de calibrage est ouvert.
@@ -1031,5 +1087,20 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.show(ui);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blind_order_is_a_permutation() {
+        for n in 1..6 {
+            let mut o = blind_order(n);
+            o.sort_unstable();
+            assert_eq!(o, (0..n).collect::<Vec<_>>());
+        }
+        assert_eq!((slot_name(0), slot_name(2)), ('A', 'C'));
     }
 }

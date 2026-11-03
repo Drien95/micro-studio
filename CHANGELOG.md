@@ -8,7 +8,16 @@ projet respecte le [versionnage sémantique](https://semver.org/lang/fr/)
 
 ## [Non publié]
 
+### Ajouté
+- Écoute à l'aveugle en fin de calibrage : les finalistes sont présentés sous
+  les lettres A, B, C dans un ordre mélangé, plus « Anciens réglages » ; on
+  garde celui qu'on préfère à l'oreille (le meilleur au score est appliqué
+  d'emblée).
+
 ### Modifié
+- Calibrage : DNSMOS ne départage plus que la propreté du fond (note BAK) ;
+  la qualité de la voix (SIG) et la note globale ne comptent plus, car le
+  réseau les estime mal sur une voix traitée. L'oreille tranche à la place.
 - Calibrage : niveau de la voix mesuré selon l'UIT-T P.56 méthode B (voix
   active : enveloppe de 30 ms, maintien de 200 ms, marge de 15,9 dB, module
   `dsp::speech_level`) au lieu de la médiane des trames à 12 dB au-dessus du

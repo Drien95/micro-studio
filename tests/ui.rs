@@ -6,6 +6,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use micro_studio::engine::{AudioBackend, DeviceLists, Engine, Shared};
 use micro_studio::monitor::{Monitor, MonitorBackend, MonitorShared};
+use micro_studio::params::Params;
 use micro_studio::settings::Settings;
 use micro_studio::ui::App;
 use micro_studio::vbcable::{Outcome, Step};
@@ -467,4 +468,37 @@ fn the_dereverb_can_be_switched_on_by_hand() {
     h.get_by_label_contains("Anti-réverbération").click_accesskit();
     h.run_steps(2);
     assert!(h.state().settings().params.dereverb_enabled);
+}
+
+#[test]
+fn blind_listening_keeps_the_chosen_finalist() {
+    use micro_studio::calibrate::{Analysis, CalibrationResult, Score};
+    let (mut h, _) = app(calibrated(), true, false);
+    let finalists: Vec<(Params, Score)> = [-4.0, -8.0, -12.0]
+        .iter()
+        .map(|&g| (Params { gate_threshold_db: g * 5.0, ..Params::default() }, Score::default()))
+        .collect();
+    let r = CalibrationResult {
+        analysis: Analysis::default(),
+        params: finalists[0].0.clone(),
+        score: Score::default(),
+        baseline_score: Score::default(),
+        candidates_tested: 3,
+        finalists: finalists.clone(),
+    };
+    h.state_mut().show_calibration_result(r);
+    h.run_steps(2);
+    // Le meilleur est appliqué d'emblée, sous une lettre inconnue.
+    assert_eq!(h.state().settings().params, finalists[0].0);
+    h.get_by_label("Réglage B").click();
+    h.run_steps(2);
+    let listened = h.state().settings().params.clone();
+    assert!(finalists.iter().any(|f| f.0 == listened));
+    h.get_by_label("Anciens réglages").click();
+    h.run_steps(2);
+    assert_eq!(h.state().settings().params, Params::default());
+    h.get_by_label("Garder le réglage B").click();
+    h.run_steps(2);
+    assert_eq!(h.state().settings().params, listened);
+    assert!(!h.state().calibration_open());
 }
