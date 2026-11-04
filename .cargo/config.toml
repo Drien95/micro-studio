@@ -1,0 +1,15 @@
+# Raccourcis de développement (voir le profil `fast` dans Cargo.toml).
+[alias]
+# Vérification de types seule, sans générer de code : le retour le plus rapide.
+c = "check --all-targets"
+# Tests unitaires seuls, en profil dev : à lancer après chaque modification.
+# (Le paquet n'a pas encore de lib.rs : les tests vivent dans le binaire.)
+quick = "test --bins"
+# Toute la suite optimisée, y compris les tests lourds.
+full = "test --profile fast --all-targets --no-fail-fast"
+# Version d'essai de l'application (target/fast/micro-studio.exe).
+trial = "build --profile fast --bin micro-studio"
+
+# Lieur LLVM fourni avec Rust : édition de liens bien plus rapide que link.exe.
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"
